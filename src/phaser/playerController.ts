@@ -10,6 +10,7 @@ import {
   GRAVITY_PX,
   MAX_RUN_SPEED_PX,
   MAX_STEP_DT,
+  PLAYER_BODY_PX,
   stepMovement,
   TERMINAL_VELOCITY_PX,
   type PlayerMovementState,
@@ -48,7 +49,7 @@ export interface PlayerControllerHooks {
  */
 export function configurePlayerSprite(player: ControllablePlayer): void {
   player.setScale(1);
-  player.setSize(10, 14).setOffset(3, 1);
+  player.setSize(PLAYER_BODY_PX.width, PLAYER_BODY_PX.height).setOffset(3, 1);
   player.setCollideWorldBounds(false);
   player.setDrag(0, 0);
   // Engine-level safety net; normal movement is capped by stepMovement.
@@ -62,7 +63,10 @@ export class PlayerController {
   private readonly player: ControllablePlayer;
   private readonly hooks: PlayerControllerHooks;
   private readonly cursors: Phaser.Types.Input.Keyboard.CursorKeys;
-  private readonly wasd: Record<"W" | "A" | "S" | "D", Phaser.Input.Keyboard.Key>;
+  private readonly wasd: Record<
+    "W" | "A" | "S" | "D",
+    Phaser.Input.Keyboard.Key
+  >;
   private readonly state: PlayerMovementState = createMovementState();
   private prevJumpHeld = false;
 

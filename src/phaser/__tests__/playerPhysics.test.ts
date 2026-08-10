@@ -4,6 +4,7 @@ import {
   GRAVITY_PX,
   JUMP_VELOCITY_PX,
   MAX_RUN_SPEED_PX,
+  MOVEMENT_CAPABILITIES,
   stepMovement,
   TERMINAL_VELOCITY_PX,
   TILE,
@@ -219,6 +220,52 @@ describe("jump gap range (~5.4 tiles standing → ~11.7 tiles full speed)", () =
     const gaps = ALL_RATES.map((dt) => jumpAndLand(dt, 10_000, 1).xTiles);
     const spread = (Math.max(...gaps) - Math.min(...gaps)) / Math.max(...gaps);
     expect(spread).toBeLessThan(0.1);
+  });
+});
+
+describe("MOVEMENT_CAPABILITIES cross-check (AI facts vs real physics)", () => {
+  /** Run `runwayTiles` from a standstill, jump, return flight distance. */
+  function flightDistanceAfterRunway(runwayTiles: number): number {
+    const sim = new Sim(FPS_60);
+    while (sim.x < runwayTiles * TILE) sim.step(1, false);
+    const takeoffX = sim.x;
+    sim.step(1, true);
+    expect(sim.jumps).toBe(1);
+    let frames = 1;
+    while (!sim.onGround && frames < 1000) {
+      sim.step(1, true);
+      frames++;
+    }
+    return (sim.x - takeoffX) / TILE;
+  }
+
+  it("every gap-ladder rung is crossable in simulation, with margin", () => {
+    for (const rung of MOVEMENT_CAPABILITIES.gapForRunway) {
+      const flight = flightDistanceAfterRunway(rung.runwayTiles);
+      expect(flight).toBeGreaterThan(rung.gapTiles + 0.15);
+    }
+  });
+
+  it("impossibleGapTiles is uncrossable even with unlimited runway", () => {
+    expect(flightDistanceAfterRunway(50)).toBeLessThan(
+      MOVEMENT_CAPABILITIES.impossibleGapTiles,
+    );
+  });
+
+  it("guaranteed step-up clears the sim apex; impossible wall exceeds it", () => {
+    const apex = jumpAndLand(FPS_60, 10_000).apexTiles;
+    expect(apex).toBeGreaterThan(MOVEMENT_CAPABILITIES.maxStepUpTiles + 0.5);
+    expect(apex).toBeLessThan(MOVEMENT_CAPABILITIES.impossibleWallTiles);
+  });
+
+  it("ladder is monotonic and body is sub-tile", () => {
+    const gaps = MOVEMENT_CAPABILITIES.gapForRunway.map((r) => r.gapTiles);
+    for (let i = 1; i < gaps.length; i++) {
+      expect(gaps[i]).toBeGreaterThanOrEqual(gaps[i - 1]);
+    }
+    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.width).toBeLessThan(1);
+    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.height).toBeLessThan(1);
+    expect(MOVEMENT_CAPABILITIES.fallsThroughOneTileGap).toBe(true);
   });
 });
 
