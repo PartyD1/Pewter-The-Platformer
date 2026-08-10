@@ -1,5 +1,12 @@
 # Player Movement — Full Deep Dive
 
+> **⚠️ HISTORICAL (2026-08-10):** This doc describes the OLD movement system,
+> which has been replaced. The frame-rate dependence, exponential
+> acceleration, duplicated editor copy, and flip/hitbox inconsistencies
+> documented below are all fixed — movement now lives in `playerPhysics.ts` +
+> `playerController.ts`, verified by `__tests__/playerPhysics.test.ts`. See
+> `PLAYER_MOVEMENT_REWORK_PLAN.md`. Kept for reference.
+
 Everything the player controller does, end to end: input → horizontal
 movement → jumping → collision/landing → edge cases → visual effects. Every
 section has a **Technical** explanation (code, formulas, line numbers) and a

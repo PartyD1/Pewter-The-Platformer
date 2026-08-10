@@ -1,5 +1,9 @@
 # Player Movement Rework — Implementation Plan
 
+> **STATUS: IMPLEMENTED (2026-08-10).** All in-scope items shipped. See
+> [Implementation notes](#implementation-notes-post-execution) at the bottom
+> for the four places reality deviated from the plan below.
+
 Decisions locked in with Parth (2026-08-10):
 
 | Decision | Choice |
@@ -325,6 +329,43 @@ Each step leaves the game runnable; commit per step.
 - [ ] Throttle the tab / use a 144Hz monitor if available: movement speed and jump distances unchanged
 - [ ] Existing levels still completable (expect mid-length gaps to be *easier*, per §2.3 — flag any that become trivial)
 - [ ] Enemies with jump AI still path sensibly (gravity fix changes their computed arcs)
+
+## Implementation notes (post-execution)
+
+Where the shipped code deviates from the plan above, and why:
+
+1. **Player scale is 1, not 2.** The plan's `configurePlayerSprite` sketch
+   assumed both scenes used `setScale(2)`. In reality only gameScene did —
+   the editor playtest ran at scale 1 with a 10×14 body, while gameScene ran
+   at scale 2 with **no** `setSize`, giving a 32×32 body (Arcade multiplies
+   body size by sprite scale — verified in Phaser 3.90's `Body.updateBounds`).
+   Since levels are authored/playtested in the editor and the active LLM
+   prompt says the player is ~1 tile, both scenes now use the editor's
+   config: scale 1, body 10×14. **The real game's knight is now half its
+   former on-screen size** — if that looks wrong, change `setScale(1)` in
+   `playerController.ts:configurePlayerSprite` (the body scales with it
+   automatically, so raising it also fattens the hitbox).
+2. **The jump frame counts as airborne for horizontal acceleration.**
+   Applying one frame of ground-strength acceleration on takeoff made the
+   standing-jump distance frame-rate dependent (a 30fps frame gives a 2×
+   kick). `stepMovement` decides the jump first and then picks the air rate
+   for that frame; with that fix `AIR_ACCEL = 22.5` t/s² (not the plan's
+   23.4) lands the standing jump at ~6.05 tiles.
+3. **The controller owns its keyboard keys.** This fixed a latent bug: the
+   editor nulled `this.cursors`/`this.wasd` on leaving play mode but only
+   created them once in `create()`, so the second playtest session had dead
+   movement keys. A fresh `PlayerController` per `setupPlayer()` recreates
+   them every time.
+4. **Sprite facing resolved: the art faces RIGHT** (tileset frame 14, the
+   knight — visor opens rightward). The editor's flip logic was correct;
+   gameScene's was inverted (the knight moonwalked in the real game). Both
+   now share `SPRITE_FACES_RIGHT = true` in `playerController.ts`.
+
+Verification shipped: `src/phaser/__tests__/playerPhysics.test.ts` (18 tests,
+`npm test`) locks every preserved number at 30/60/144fps with ≤10%
+cross-rate spread. `npx tsc --noEmit` shows no errors in the new modules
+(pre-existing unused-variable noise elsewhere untouched); `npm run build`
+passes.
 
 ## 7. Explicitly out of scope (deferred)
 

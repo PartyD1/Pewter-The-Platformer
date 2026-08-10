@@ -445,7 +445,9 @@ export class DynamicEnemy extends Phaser.Physics.Arcade.Sprite {
         this.y,
         terrain.nearestPlatformX,
         terrain.nearestPlatformY,
-        800, // gravity
+        // Live world gravity (1500 in play mode; the old hardcoded 800 made
+        // every computed arc fall short of the real trajectory)
+        this.scene.physics.world.gravity.y || undefined,
       );
 
       if (jumpData) {

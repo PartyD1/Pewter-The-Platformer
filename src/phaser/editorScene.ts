@@ -28,6 +28,11 @@ import {
 } from "./selectionBox.ts";
 import { regenerate } from "./ExternalClasses/RegenerationTools.ts";
 import { Z_LEVEL_COLORS } from "./colors";
+import {
+  configurePlayerSprite,
+  PlayerController,
+  WORLD_GRAVITY_Y,
+} from "./playerController";
 
 type EnemySnapshotEntry =
   | { kind: "Slime"; spawnX: number; spawnY: number }
@@ -129,10 +134,8 @@ export class EditorScene extends Phaser.Scene {
     }
   }
   private player!: PlayerSprite;
-  // Play mode controls
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasd!: any;
-  private isJumpPressed = false;
+  // Play mode movement lives in the shared PlayerController (owns its own keys)
+  private playerController: PlayerController | null = null;
 
   private selectedTileIndex = -1; // index of the tile to place
   private selectedBlockName = ""; // name of the selected block
@@ -311,7 +314,7 @@ export class EditorScene extends Phaser.Scene {
     });
 
     // Enable physics and gravity for play mode
-    this.physics.world.gravity.y = 1500;
+    this.physics.world.gravity.y = WORLD_GRAVITY_Y;
 
     // Ensure ground layer has collision enabled
     if (this.groundLayer) {
@@ -353,8 +356,6 @@ export class EditorScene extends Phaser.Scene {
       .setZoom(this.zoomLevel);
 
     // Setup player movement controls
-    this.cursors = this.input.keyboard!.createCursorKeys();
-    this.wasd = this.input.keyboard!.addKeys("W,S,A,D");
 
     // Add Q key handler to quit play mode
     if (this.input.keyboard) {
@@ -1017,9 +1018,9 @@ export class EditorScene extends Phaser.Scene {
       14,
     ) as PlayerSprite;
 
-    this.player.setSize(10, 14).setOffset(3, 1);
-    this.player.setCollideWorldBounds(false);
+    configurePlayerSprite(this.player);
     this.player.isFalling = true;
+    this.playerController = new PlayerController(this, this.player);
     this.physics.add.collider(this.player, this.groundLayer);
   }
 
@@ -1199,7 +1200,7 @@ export class EditorScene extends Phaser.Scene {
     replaceAllBoxes();
   }
 
-  update() {
+  update(_time: number, delta: number) {
     if (this.gameActive && this.player) {
       // Play mode: player movement and camera follow
       // Hide grid and red outline
@@ -1241,77 +1242,8 @@ export class EditorScene extends Phaser.Scene {
       if (this.highlightBox) this.highlightBox.clear();
       //if (this.selectionBox) this.selectionBox.clear();
 
-      if (this.player && this.cursors && this.wasd) {
-        const player = this.player;
-        const body = player.body;
-        const onGround = body.blocked.down;
-
-        let velocityX = body.velocity.x;
-        let velocityY = body.velocity.y;
-
-        let moveInput = 0;
-        if (this.cursors.left.isDown || this.wasd.A.isDown) {
-          moveInput = -1;
-          player.setFlipX(true);
-        } else if (this.cursors.right.isDown || this.wasd.D.isDown) {
-          moveInput = 1;
-          player.setFlipX(false);
-        }
-
-        const PLAYER_SPEED = 400;
-        const ACCELERATION = 1500;
-        const FRICTION = 1200;
-        const AIR_CONTROL = 0.8;
-        const JUMP_VELOCITY = -550;
-
-        if (moveInput !== 0) {
-          const acceleration = onGround
-            ? ACCELERATION
-            : ACCELERATION * AIR_CONTROL;
-          const targetVelocity = moveInput * PLAYER_SPEED;
-          if (Math.abs(velocityX - targetVelocity) > 5) {
-            velocityX +=
-              (targetVelocity - velocityX) * (acceleration / 1000) * (1 / 60);
-            velocityX = Phaser.Math.Clamp(
-              velocityX,
-              -PLAYER_SPEED,
-              PLAYER_SPEED,
-            );
-          } else {
-            velocityX = targetVelocity;
-          }
-        } else {
-          // No horizontal input - apply friction
-          if (onGround) {
-            const frictionForce = FRICTION * (1 / 60);
-            if (Math.abs(velocityX) > frictionForce) {
-              velocityX -= Math.sign(velocityX) * frictionForce;
-            } else {
-              velocityX = 0;
-            }
-          } else {
-            const airFriction = FRICTION * 0.3 * (1 / 60);
-            if (Math.abs(velocityX) > airFriction) {
-              velocityX -= Math.sign(velocityX) * airFriction;
-            } else {
-              velocityX = 0;
-            }
-          }
-        }
-
-        // Jump logic
-        const jumpPressed = this.cursors.up.isDown || this.wasd.W.isDown;
-        if (jumpPressed && !this.isJumpPressed && onGround) {
-          velocityY = JUMP_VELOCITY;
-          this.isJumpPressed = true;
-        } else if (!jumpPressed && this.isJumpPressed && velocityY < -50) {
-          velocityY *= 0.4;
-        }
-        if (!jumpPressed) {
-          this.isJumpPressed = false;
-        }
-
-        player.setVelocity(velocityX, velocityY);
+      if (this.player && this.playerController) {
+        this.playerController.update(delta);
       }
       // update the play button's position to the camera
       if (this.playButton) {
@@ -2245,9 +2177,7 @@ export class EditorScene extends Phaser.Scene {
     this.physics.world.gravity.y = 0;
 
     // Clear play mode controls
-    this.cursors = undefined as any;
-    this.wasd = undefined as any;
-    this.isJumpPressed = false;
+    this.playerController = null;
 
     if (this.playStatsEl) {
       this.playStatsEl.remove();
@@ -2308,7 +2238,8 @@ export class EditorScene extends Phaser.Scene {
       // Respawn player
       if (this.player) {
         this.player.setPosition(100, 150);
-        this.player.setVelocity(0, 0);
+        this.playerController?.reset();
+        if (!this.playerController) this.player.setVelocity(0, 0);
       }
 
       // Reset stats

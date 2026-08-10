@@ -1,4 +1,9 @@
 import Phaser from "phaser";
+import {
+  configurePlayerSprite,
+  PlayerController,
+  WORLD_GRAVITY_Y,
+} from "./playerController";
 
 type VFX = {
   walking?: Phaser.GameObjects.Particles.ParticleEmitter;
@@ -30,15 +35,8 @@ export class GameScene extends Phaser.Scene {
   private midground!: Phaser.GameObjects.TileSprite;
   private vfx: VFX = {};
   private player!: PlayerSprite;
+  private playerController!: PlayerController;
   private editorButton!: Phaser.GameObjects.Text;
-
-  private readonly PLAYER_SPEED = 400;   // Player run speed
-  private readonly JUMP_VELOCITY = -550; // Player jump height
-  private readonly ACCELERATION = 1500;  // Rate the player gets to max speed
-  private readonly FRICTION = 1200;      // Rate the player slows down
-  private readonly AIR_CONTROL = 0.8;    // % of ground control while in the air
-
-  private isJumpPressed = false;
 
   constructor() {
     super({ key: "GameScene" });
@@ -55,14 +53,6 @@ export class GameScene extends Phaser.Scene {
   }
 
   create() {
-    // Add keyboard controls
-    const cursors = this.input.keyboard!.createCursorKeys();
-    const wasd = this.input.keyboard!.addKeys('W,S,A,D');
-
-    // Store references
-    this.cursors = cursors;
-    this.wasd = wasd;
-
     /*
     this.map = this.make.tilemap({
       key: "platformer-level-1",
@@ -138,7 +128,7 @@ export class GameScene extends Phaser.Scene {
       this.map.widthInPixels,
       this.map.heightInPixels,
     );
-    this.physics.world.gravity.y = 1500;
+    this.physics.world.gravity.y = WORLD_GRAVITY_Y;
 
     /*
     //Not actually coins but whatever
@@ -161,13 +151,14 @@ export class GameScene extends Phaser.Scene {
     */
 
     this.player = this.physics.add.sprite(100, 150, 'spritesheet', 14) as PlayerSprite;
-    this.player.setScale(2);
-
-    this.player.setCollideWorldBounds(false);
+    configurePlayerSprite(this.player);
     this.player.isFalling = false;
 
-    this.player.setDrag(0, 0);
-    this.player.setMaxVelocity(this.PLAYER_SPEED * 1.2, 800);
+    this.playerController = new PlayerController(this, this.player, {
+      onJump: () => this.startJumpVFX(),
+      onWalk: () => this.startWalkingVFX(),
+      onStopWalking: () => this.vfx.walking?.stop(),
+    });
 
     // this.cameras.main.centerOn(this.player.x, this.player.y);
     console.log('Player created at:', this.player.x, this.player.y);
@@ -185,8 +176,6 @@ export class GameScene extends Phaser.Scene {
 
     console.log('Camera scroll:', this.cameras.main.scrollX, this.cameras.main.scrollY);
     console.log('Camera zoom:', this.cameras.main.zoom);
-
-    this.player.setScale(2);
 
     this.physics.add.collider(this.player, this.groundLayer);
 
@@ -280,8 +269,14 @@ export class GameScene extends Phaser.Scene {
     this.createEditorButton();
   }
 
-  update() {
-    this.handlePlayerMovement();
+  update(_time: number, delta: number) {
+    this.playerController.update(delta);
+
+    // Reset if fallen off the world
+    if (this.player.y > this.map.heightInPixels + 100) {
+      this.player.setPosition(100, 150);
+      this.playerController.reset();
+    }
 
     // update the edit button's position to the camera
     if (this.editorButton) {
@@ -290,111 +285,6 @@ export class GameScene extends Phaser.Scene {
       this.editorButton.y = cam.worldView.y + 250;
     }
   }
-  
-
-
-  
-  public handlePlayerMovement() {
-    const player = this.player;
-    const body = player.body;
-    const onGround = body.blocked.down;
-
-    let velocityX = body.velocity.x;
-    let velocityY = body.velocity.y;
-
-    let moveInput = 0;
-
-    if (this.cursors.left.isDown || this.wasd.A.isDown) {
-      moveInput = -1;
-      player.setFlipX(false);
-    } else if (this.cursors.right.isDown || this.wasd.D.isDown) {
-      moveInput = 1;
-      player.setFlipX(true);
-    }
-
-    if (moveInput !== 0) {
-      const acceleration = onGround ? this.ACCELERATION : this.ACCELERATION * this.AIR_CONTROL;
-      const targetVelocity = moveInput * this.PLAYER_SPEED;
-
-      if (Math.abs(velocityX - targetVelocity) > 5) {
-        velocityX += (targetVelocity - velocityX) * (acceleration / 1000) * (1/60);
-        velocityX = Phaser.Math.Clamp(velocityX, -this.PLAYER_SPEED, this.PLAYER_SPEED);
-      } else {
-        velocityX = targetVelocity;
-      }
-      
-      // Walking effects
-      if (onGround) {
-        this.startWalkingVFX();
-      }
-
-    } else {
-      // No horizontal input - apply friction
-      if (onGround) {
-        // Strong friction on ground
-        const frictionForce = this.FRICTION * (1/60); // 60fps assumption
-        if (Math.abs(velocityX) > frictionForce) {
-          velocityX -= Math.sign(velocityX) * frictionForce;
-        } else {
-          velocityX = 0; // Stop completely when velocity is small
-        }
-      } else {
-        // Less friction in air
-        const airFriction = this.FRICTION * 0.3 * (1/60);
-        if (Math.abs(velocityX) > airFriction) {
-          velocityX -= Math.sign(velocityX) * airFriction;
-        } else {
-          velocityX = 0;
-        }
-      }
-      
-      // Stop walking effects
-      if (this.vfx.walking) {
-        this.vfx.walking.stop();
-      }
-    
-    }
-    const jumpPressed = this.cursors.up.isDown || this.wasd.W.isDown;
-    
-    if (jumpPressed && !this.isJumpPressed && onGround) {
-      // Start jump
-      velocityY = this.JUMP_VELOCITY;
-      this.isJumpPressed = true;
-      player.isFalling = false;
-      
-      this.startJumpVFX();
-    } else if (!jumpPressed && this.isJumpPressed && velocityY < -50) {
-      // Jump button released early - cut jump short
-      velocityY *= 0.4;
-    }
-    
-    // Track jump button state
-    if (!jumpPressed) {
-      this.isJumpPressed = false;
-    }
-
-    // === APPLY VELOCITIES ===
-    player.setVelocity(velocityX, velocityY);
-
-    // === HANDLE LANDING ===
-    if (onGround && player.isFalling) {
-      player.isFalling = false;
-    } else if (!onGround && velocityY > 0) {
-      player.isFalling = true;
-    }
-
-    // === RESET IF FALLEN OFF WORLD ===
-    if (player.y > this.map.heightInPixels + 100) {
-      // Reset player position or restart scene
-      player.setPosition(100, 150);
-      player.setVelocity(0, 0);
-    }
-  }
-
-  
-
-  private cursors!: Phaser.Types.Input.Keyboard.CursorKeys;
-  private wasd!: any;
 
   private startWalkingVFX() {
     if (!this.vfx.walking) return;

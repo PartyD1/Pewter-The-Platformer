@@ -27,8 +27,11 @@ class Sim {
   frame = 0;
   private state = createMovementState();
   private prevJump = false;
+  private dt: number;
 
-  constructor(private dt: number) {}
+  constructor(dt: number) {
+    this.dt = dt;
+  }
 
   step(move: -1 | 0 | 1, jump: boolean) {
     const jumpJustPressed = jump && !this.prevJump;
