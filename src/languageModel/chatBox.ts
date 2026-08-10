@@ -149,6 +149,7 @@ const READ_ONLY_TOOLS = new Set([
   "getWorldFacts",
   "relativeGeneration",
   "verifyComplete",
+  "checkTraversal",
 ]);
 
 /**

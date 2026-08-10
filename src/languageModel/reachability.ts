@@ -193,13 +193,12 @@ export function computeReachability(
   // Group unreachable standable cells into walk-connected islands and
   // diagnose each one relative to the nearest reachable cell.
   const unreachable = allStandable.filter((c) => !reachable.has(key(c.x, c.y)));
-  const diagnoses = diagnoseIslands(g, unreachable, allStandable, reachable);
+  const diagnoses = diagnoseIslands(unreachable, allStandable, reachable);
 
   return { reachable, standableCount: allStandable.length, diagnoses };
 }
 
 function diagnoseIslands(
-  g: TileGridView,
   unreachable: Cell[],
   allStandable: Cell[],
   reachable: Set<string>,
