@@ -14,6 +14,30 @@ import {
 /** Player spawn/respawn point used by the editor playtest (px). */
 const SPAWN_PX = { x: 100, y: 150 };
 
+/** Spawn point in tile coordinates. */
+export const SPAWN_TILE = {
+  x: Math.floor(SPAWN_PX.x / TILE),
+  y: Math.floor(SPAWN_PX.y / TILE),
+};
+
+/**
+ * Grid view over the Ground_Layer. Editor convention: -1 = empty, 1 = empty
+ * marker, >1 = real tile; everything real collides in play mode.
+ */
+export function buildGridView(scene: EditorScene): TileGridView | null {
+  const map = scene.map;
+  const ground = scene.groundLayer;
+  if (!map || !ground) return null;
+  return {
+    width: map.width,
+    height: map.height,
+    isSolid: (x, y) => {
+      const t = ground.getTileAt(x, y);
+      return !!t && t.index > 1;
+    },
+  };
+}
+
 export interface CompletabilityReport {
   ok: boolean;
   /** LLM-facing report: failures to fix, or a success summary + warnings. */
@@ -23,28 +47,12 @@ export interface CompletabilityReport {
 export function runCompletabilityCheck(
   scene: EditorScene,
 ): CompletabilityReport {
-  const map = scene.map;
-  const ground = scene.groundLayer;
-  if (!map || !ground) {
+  const grid = buildGridView(scene);
+  if (!grid) {
     return { ok: true, text: "Reachability check skipped — no map loaded." };
   }
 
-  const grid: TileGridView = {
-    width: map.width,
-    height: map.height,
-    // Editor convention: -1 = empty, 1 = empty marker, >1 = real tile.
-    // Everything real on Ground_Layer collides in play mode.
-    isSolid: (x, y) => {
-      const t = ground.getTileAt(x, y);
-      return !!t && t.index > 1;
-    },
-  };
-
-  const start = {
-    x: Math.floor(SPAWN_PX.x / TILE),
-    y: Math.floor(SPAWN_PX.y / TILE),
-  };
-  const result = computeReachability(grid, start);
+  const result = computeReachability(grid, SPAWN_TILE);
 
   const failures: string[] = [];
   const warnings: string[] = [];

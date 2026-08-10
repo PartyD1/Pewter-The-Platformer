@@ -11,7 +11,7 @@ export class WorldFactsTool {
 
   static argsSchema = z.object({
     category: z
-      .enum(["Structure", "Collectable", "Enemy"])
+      .enum(["Structure", "Collectable", "Enemy", "Traversal"])
       .describe("The category of facts to retrieve."),
 
     xMin: z
@@ -63,6 +63,7 @@ Categories:
 - 'Structure': Information about ground height map.
 - 'Collectable': Items that can be collected.
 - 'Enemy': Enemy positions and types.
+- 'Traversal': What the player can actually reach and cross — reachable-tile summary, unreachable platforms with reasons, and each pit's width vs the run-up available (computed from real movement physics). Use this when judging whether gaps/platforms you see in Structure facts are beatable.
 `,
     },
   );

@@ -1,5 +1,28 @@
 # Pewter Physics Awareness — Implementation Plan
 
+> **STATUS: IMPLEMENTED (2026-08-10).** All phases shipped, including the
+> §4 worldFacts Traversal category. Notable deviations from the sketches
+> below:
+>
+> 1. **The derived gap ladder is** standing→4, 1-tile run-up→8, 2→10,
+>    4+→11 tiles (the plan's hand-sketched ladder was slightly different —
+>    the derivation with a 0.4-tile safety margin wins, and the
+>    sim cross-check tests enforce it).
+> 2. **Unreachable platforms are warnings, not failures**, in
+>    `verifyComplete` — only a dead spawn or an uncollectable collectable
+>    hard-fails, so decorative scenery can't block Pewter's replies.
+>    (There is no goal/exit object in the game to path-check against.)
+> 3. **The 1-tile-gap fact is geometrically derived** (10px body < 16px
+>    tile ⇒ falls through) and encoded as
+>    `MOVEMENT_CAPABILITIES.fallsThroughOneTileGap`; confirm once in manual
+>    QA before designing floor-gap traps around it.
+> 4. Files landed: `playerPhysics.ts` (capabilities + helpers),
+>    `movementPrompt.ts`, `designPolicy.ts`, `reachability.ts`,
+>    `sceneReachability.ts`, `tools/checkTraversal.ts`, rewritten
+>    `tools/verifyComplete.ts`, Traversal category in `worldFacts.ts` +
+>    `worldFactsTool.ts`, prompt swap in `chatBox.ts`, stale prompt removed
+>    from `modelConnector.ts`. 38 tests total (`npm test`).
+
 Goal (Parth, 2026-08-10): feed the tuned movement physics into the whole AI
 ecosystem so Pewter (the LLM level designer) **knows exactly what levels are
 possible**, and **defaults to challenging designs** — 5–6-block jumps rather
