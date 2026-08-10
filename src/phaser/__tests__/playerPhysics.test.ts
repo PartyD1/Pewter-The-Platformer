@@ -96,8 +96,8 @@ describe("preserved constants", () => {
     expect(JUMP_VELOCITY_PX).toBeCloseTo(-550, 0);
   });
 
-  it("top speed derives to the legacy 400 px/s", () => {
-    expect(MAX_RUN_SPEED_PX).toBe(400);
+  it("top speed derives to 256 px/s (16 tiles/s)", () => {
+    expect(MAX_RUN_SPEED_PX).toBe(256);
   });
 });
 
@@ -114,7 +114,8 @@ describe("jump height", () => {
       expect(apex).toBeGreaterThan(5.6);
       expect(apex).toBeLessThan(6.5);
     }
-    const spread = (Math.max(...apexes) - Math.min(...apexes)) / Math.max(...apexes);
+    const spread =
+      (Math.max(...apexes) - Math.min(...apexes)) / Math.max(...apexes);
     expect(spread).toBeLessThan(0.1);
   });
 
@@ -142,25 +143,28 @@ describe("jump height", () => {
 });
 
 describe("horizontal movement", () => {
-  it("reaches exactly top speed within 0.3s from rest, at all frame rates", () => {
+  it("needs a real runway: top speed takes ~0.8s / ~6.4 tiles, at all frame rates", () => {
     for (const dt of ALL_RATES) {
       const sim = new Sim(dt);
       let t = 0;
-      while (sim.vx < MAX_RUN_SPEED_PX && t < 1) {
+      while (sim.vx < MAX_RUN_SPEED_PX && t < 2) {
         sim.step(1, false);
         t += dt;
       }
       expect(sim.vx).toBe(MAX_RUN_SPEED_PX);
-      expect(t).toBeLessThanOrEqual(0.3);
+      expect(t).toBeGreaterThan(0.7); // not instant — run-up must matter
+      expect(t).toBeLessThanOrEqual(0.9);
+      expect(sim.xTiles).toBeGreaterThan(5.8);
+      expect(sim.xTiles).toBeLessThan(7.5); // 30fps float edge adds one frame
     }
   });
 
-  it("stops from top speed in ~4 tiles on the ground (preserved)", () => {
+  it("stops from top speed in ~1.7 tiles on the ground", () => {
     const sim = new Sim(FPS_60);
     sim.vx = MAX_RUN_SPEED_PX;
     while (sim.vx > 0) sim.step(0, false);
-    expect(sim.xTiles).toBeGreaterThan(3.6);
-    expect(sim.xTiles).toBeLessThan(4.3);
+    expect(sim.xTiles).toBeGreaterThan(1.4);
+    expect(sim.xTiles).toBeLessThan(2.0);
   });
 
   it("stopping distance is consistent across frame rates", () => {
@@ -170,20 +174,48 @@ describe("horizontal movement", () => {
       while (sim.vx > 0) sim.step(0, false);
       return sim.xTiles;
     });
-    const spread =
-      (Math.max(...distances) - Math.min(...distances)) / Math.max(...distances);
-    expect(spread).toBeLessThan(0.1);
+    // Absolute bound: at short distances (~1.7 tiles) Euler discretization
+    // makes relative spread misleading.
+    const spread = Math.max(...distances) - Math.min(...distances);
+    expect(spread).toBeLessThan(0.25);
   });
 });
 
-describe("standing-jump gap (preserved ~6.1 tiles)", () => {
-  it("covers ~6.1 tiles at 60fps", () => {
+describe("jump gap range (~5.4 tiles standing → ~11.7 tiles full speed)", () => {
+  it("standing jump covers ~5.4 tiles at 60fps", () => {
     const sim = jumpAndLand(FPS_60, 10_000, 1);
-    expect(sim.xTiles).toBeGreaterThan(5.7);
-    expect(sim.xTiles).toBeLessThan(6.5);
+    expect(sim.xTiles).toBeGreaterThan(4.9);
+    expect(sim.xTiles).toBeLessThan(5.9);
   });
 
-  it("is consistent across frame rates", () => {
+  it("full-speed jump covers ~11.7 tiles at 60fps", () => {
+    const sim = new Sim(FPS_60);
+    sim.vx = MAX_RUN_SPEED_PX;
+    sim.step(1, true); // jump at top speed
+    expect(sim.jumps).toBe(1);
+    let frames = 1;
+    while (!sim.onGround && frames < 1000) {
+      sim.step(1, true);
+      frames++;
+    }
+    expect(sim.xTiles).toBeGreaterThan(11.0);
+    expect(sim.xTiles).toBeLessThan(12.4);
+  });
+
+  it("gap range stays within ~2:1 so the AI can reason about crossability", () => {
+    const standing = jumpAndLand(FPS_60, 10_000, 1).xTiles;
+    const full = new Sim(FPS_60);
+    full.vx = MAX_RUN_SPEED_PX;
+    full.step(1, true);
+    let frames = 1;
+    while (!full.onGround && frames < 1000) {
+      full.step(1, true);
+      frames++;
+    }
+    expect(full.xTiles / standing).toBeLessThan(2.4);
+  });
+
+  it("standing jump is consistent across frame rates", () => {
     const gaps = ALL_RATES.map((dt) => jumpAndLand(dt, 10_000, 1).xTiles);
     const spread = (Math.max(...gaps) - Math.min(...gaps)) / Math.max(...gaps);
     expect(spread).toBeLessThan(0.1);
@@ -201,12 +233,12 @@ describe("coyote time", () => {
     return sim;
   }
 
-  it("jump still fires ~83ms after leaving the ledge", () => {
-    expect(runOffLedge(4).jumps).toBe(1);
+  it("jump still fires ~50ms after leaving the ledge", () => {
+    expect(runOffLedge(3).jumps).toBe(1);
   });
 
-  it("jump does NOT fire ~133ms after leaving the ledge", () => {
-    expect(runOffLedge(8).jumps).toBe(0);
+  it("jump does NOT fire ~83ms after leaving the ledge", () => {
+    expect(runOffLedge(5).jumps).toBe(0);
   });
 
   it("cannot double-jump from one grace window", () => {
@@ -242,7 +274,8 @@ describe("jump buffering", () => {
     sim.onGround = false;
     for (let f = 0; f < landFrame + 5; f++) {
       const press =
-        pressFramesBeforeLand !== null && f >= landFrame - pressFramesBeforeLand;
+        pressFramesBeforeLand !== null &&
+        f >= landFrame - pressFramesBeforeLand;
       sim.step(0, press);
     }
     return sim;

@@ -16,19 +16,28 @@ export const TILE = 16;
 
 export const PLAYER_PHYSICS = {
   // ── Horizontal (tiles/s, tiles/s²) ──────────────────────────────────────
-  /** Top run speed. 25 t/s = 400 px/s. */
-  MAX_RUN_SPEED: 25,
-  /** Linear ground acceleration. 0→max in ~0.27s over ~3.3 tiles. */
-  GROUND_ACCEL: 93.75,
-  /** Linear ground deceleration when no input. Max→0 in ~0.33s over ~4 tiles. */
+  /**
+   * Top run speed. 16 t/s = 256 px/s. Together with the fixed ~0.73s jump
+   * airtime this caps the longest crossable gap at ~11.7 tiles — tuned down
+   * from 25 t/s (~18-tile gaps) so the crossable-gap range stays narrow
+   * enough for the AI level designer to reason about (~5.4–11.7 tiles, ~2:1).
+   */
+  MAX_RUN_SPEED: 16,
+  /**
+   * Linear ground acceleration. 0→max in ~0.8s over ~6.4 tiles of runway —
+   * deliberately not instant, so max-length jumps require a real run-up
+   * that level geometry can grant or deny.
+   */
+  GROUND_ACCEL: 20,
+  /** Linear ground deceleration when no input. Max→0 in ~0.21s over ~1.7 tiles. */
   GROUND_FRICTION: 75,
   /**
-   * Linear air acceleration. Tuned so a standing jump (accelerating from
-   * rest in mid-air) covers ~6.1 tiles, preserving the pre-rework value.
+   * Linear air acceleration. Equal to GROUND_ACCEL so control feels the
+   * same airborne as grounded. Puts a standing jump at ~5.4 tiles.
    */
-  AIR_ACCEL: 22.5,
-  /** Linear air deceleration when no input (was the unnamed FRICTION * 0.3). */
-  AIR_FRICTION: 22.5,
+  AIR_ACCEL: 20,
+  /** Linear air deceleration when no input (gentler than ground friction). */
+  AIR_FRICTION: 15,
 
   // ── Vertical (tiles, tiles/s, tiles/s²) ─────────────────────────────────
   /** World gravity. 93.75 t/s² = 1500 px/s². */
@@ -44,17 +53,17 @@ export const PLAYER_PHYSICS = {
   /** No jump-cut once rising slower than this (tiles/s; 3.125 t/s = 50 px/s). */
   JUMP_CUT_MIN_SPEED: 3.125,
   /** Seconds after leaving a ledge during which a jump still fires. */
-  COYOTE_TIME: 0.09,
+  COYOTE_TIME: 0.06,
   /** Seconds before landing during which an early jump press is queued. */
   JUMP_BUFFER: 0.1,
 } as const;
 
 // ── Derived px-space values (never hand-edit; tune the tile units above) ──
-export const MAX_RUN_SPEED_PX = PLAYER_PHYSICS.MAX_RUN_SPEED * TILE; // 400
-export const GROUND_ACCEL_PX = PLAYER_PHYSICS.GROUND_ACCEL * TILE; // 1500
+export const MAX_RUN_SPEED_PX = PLAYER_PHYSICS.MAX_RUN_SPEED * TILE; // 256
+export const GROUND_ACCEL_PX = PLAYER_PHYSICS.GROUND_ACCEL * TILE; // 320
 export const GROUND_FRICTION_PX = PLAYER_PHYSICS.GROUND_FRICTION * TILE; // 1200
-export const AIR_ACCEL_PX = PLAYER_PHYSICS.AIR_ACCEL * TILE; // 360
-export const AIR_FRICTION_PX = PLAYER_PHYSICS.AIR_FRICTION * TILE; // 360
+export const AIR_ACCEL_PX = PLAYER_PHYSICS.AIR_ACCEL * TILE; // 320
+export const AIR_FRICTION_PX = PLAYER_PHYSICS.AIR_FRICTION * TILE; // 240
 export const GRAVITY_PX = PLAYER_PHYSICS.GRAVITY * TILE; // 1500
 export const TERMINAL_VELOCITY_PX = PLAYER_PHYSICS.TERMINAL_VELOCITY * TILE; // 800
 export const JUMP_CUT_MIN_SPEED_PX = PLAYER_PHYSICS.JUMP_CUT_MIN_SPEED * TILE; // 50
@@ -125,13 +134,12 @@ export function stepMovement(
   onGround: boolean,
   dt: number,
 ): StepResult {
-  // Jump timers.
-  state.coyoteTimer = onGround
-    ? PLAYER_PHYSICS.COYOTE_TIME
-    : Math.max(0, state.coyoteTimer - dt);
-  state.jumpBufferTimer = input.jumpJustPressed
-    ? PLAYER_PHYSICS.JUMP_BUFFER
-    : Math.max(0, state.jumpBufferTimer - dt);
+  // Refresh jump timers BEFORE the jump check and decay them AFTER (bottom
+  // of this function), so "timer > 0" means time remaining at the start of
+  // this frame — otherwise the usable window is one frame shorter than the
+  // constant claims.
+  if (onGround) state.coyoteTimer = PLAYER_PHYSICS.COYOTE_TIME;
+  if (input.jumpJustPressed) state.jumpBufferTimer = PLAYER_PHYSICS.JUMP_BUFFER;
 
   let newVelocityY = velocityY;
   let jumped = false;
@@ -154,6 +162,10 @@ export function stepMovement(
   if (!input.jumpHeld && !jumped) {
     state.canCutJump = false;
   }
+
+  // Decay timers for the next frame.
+  if (!onGround) state.coyoteTimer = Math.max(0, state.coyoteTimer - dt);
+  state.jumpBufferTimer = Math.max(0, state.jumpBufferTimer - dt);
 
   // Horizontal: one moveTowards covers accelerating, turning, and stopping.
   // The jump frame counts as airborne — otherwise takeoff would get one

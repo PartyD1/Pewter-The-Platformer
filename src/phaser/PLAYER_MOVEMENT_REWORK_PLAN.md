@@ -6,17 +6,17 @@
 
 Decisions locked in with Parth (2026-08-10):
 
-| Decision | Choice |
-|---|---|
-| Acceleration model | **Snappy linear acceleration** (true px/s², ~0.27s to top speed) — replaces exponential smoothing |
-| Frame-rate independence | **Delta-based** (pass Phaser's real `delta` into the formulas; no fixed-step accumulator) |
-| Units | **Tiles + seconds everywhere** — constants defined in tiles/s, tiles/s², tiles; converted to px once at the boundary |
-| Compatibility | **Preserve key numbers**: max jump height, standing-jump gap, top speed, ground stop distance |
-| Structure | **Shared PlayerController** consumed by both `gameScene` and `editorScene` playtest |
-| Adjacent fixes | TerrainAwareness gravity bug; body-size + sprite-flip mismatches between scenes |
-| Feel additions | **Coyote time** (~90ms) + **jump buffering** (~100ms) |
-| Sprite facing | Verify from the spritesheet art during implementation; make both scenes consistent |
-| Out of scope | Syncing the LLM system-prompt numbers (`chatBox.ts` / `modelConnector.ts`) — deliberately deferred |
+| Decision                | Choice                                                                                                               |
+| ----------------------- | -------------------------------------------------------------------------------------------------------------------- |
+| Acceleration model      | **Snappy linear acceleration** (true px/s², ~0.27s to top speed) — replaces exponential smoothing                    |
+| Frame-rate independence | **Delta-based** (pass Phaser's real `delta` into the formulas; no fixed-step accumulator)                            |
+| Units                   | **Tiles + seconds everywhere** — constants defined in tiles/s, tiles/s², tiles; converted to px once at the boundary |
+| Compatibility           | **Preserve key numbers**: max jump height, standing-jump gap, top speed, ground stop distance                        |
+| Structure               | **Shared PlayerController** consumed by both `gameScene` and `editorScene` playtest                                  |
+| Adjacent fixes          | TerrainAwareness gravity bug; body-size + sprite-flip mismatches between scenes                                      |
+| Feel additions          | **Coyote time** (~90ms) + **jump buffering** (~100ms)                                                                |
+| Sprite facing           | Verify from the spritesheet art during implementation; make both scenes consistent                                   |
+| Out of scope            | Syncing the LLM system-prompt numbers (`chatBox.ts` / `modelConnector.ts`) — deliberately deferred                   |
 
 Background/analysis: see `PLAYER_CONTROLLER_PHYSICS.md` and
 `PLAYER_MOVEMENT_DEEP_DIVE.md`. This plan supersedes the "open question" in
@@ -68,33 +68,34 @@ export const TILE = 16; // world px per tile — the ONLY px conversion
 
 export const PLAYER_PHYSICS = {
   // Speed & acceleration (tiles/s, tiles/s²)
-  MAX_RUN_SPEED: 25,        // = 400 px/s (preserved)
-  GROUND_ACCEL: 93.75,      // = 1500 px/s² → 0→max in ~0.27s, ~3.3 tiles of runway
-  GROUND_FRICTION: 75,      // = 1200 px/s² (preserved) → stop from max in 0.33s / ~4.1 tiles
-  AIR_ACCEL: 23.4,          // = ~375 px/s² — tuned to preserve the ~6.1-tile standing jump (§2.3)
-  AIR_FRICTION: 22.5,       // = 360 px/s² (preserved; was the unnamed FRICTION * 0.3)
+  MAX_RUN_SPEED: 25, // = 400 px/s (preserved)
+  GROUND_ACCEL: 93.75, // = 1500 px/s² → 0→max in ~0.27s, ~3.3 tiles of runway
+  GROUND_FRICTION: 75, // = 1200 px/s² (preserved) → stop from max in 0.33s / ~4.1 tiles
+  AIR_ACCEL: 23.4, // = ~375 px/s² — tuned to preserve the ~6.1-tile standing jump (§2.3)
+  AIR_FRICTION: 22.5, // = 360 px/s² (preserved; was the unnamed FRICTION * 0.3)
 
   // Vertical (tiles, tiles/s, tiles/s²)
-  GRAVITY: 93.75,           // = 1500 px/s² (preserved)
-  JUMP_HEIGHT: 6.3,         // tiles, full-hold apex (preserved: derives v₀ ≈ 550 px/s)
-  TERMINAL_VELOCITY: 50,    // = 800 px/s max fall speed (was the unnamed setMaxVelocity y)
+  GRAVITY: 93.75, // = 1500 px/s² (preserved)
+  JUMP_HEIGHT: 6.3, // tiles, full-hold apex (preserved: derives v₀ ≈ 550 px/s)
+  TERMINAL_VELOCITY: 50, // = 800 px/s max fall speed (was the unnamed setMaxVelocity y)
 
   // Jump modifiers (dimensionless / s / tiles/s)
   JUMP_CUT_MULTIPLIER: 0.4, // preserved: release early → upward velocity × 0.4
-  JUMP_CUT_MIN_SPEED: 3.125,// = 50 px/s: no cut once slower than this upward
-  COYOTE_TIME: 0.09,        // s — NEW: grace period to jump after leaving a ledge
-  JUMP_BUFFER: 0.1,         // s — NEW: early jump press queued until landing
+  JUMP_CUT_MIN_SPEED: 3.125, // = 50 px/s: no cut once slower than this upward
+  COYOTE_TIME: 0.09, // s — NEW: grace period to jump after leaving a ledge
+  JUMP_BUFFER: 0.1, // s — NEW: early jump press queued until landing
 } as const;
 
 // Derived once, in px, next to the definitions — never hand-computed elsewhere:
-export const JUMP_VELOCITY_PX =
-  -Math.sqrt(2 * PLAYER_PHYSICS.GRAVITY * TILE * PLAYER_PHYSICS.JUMP_HEIGHT * TILE);
+export const JUMP_VELOCITY_PX = -Math.sqrt(
+  2 * PLAYER_PHYSICS.GRAVITY * TILE * PLAYER_PHYSICS.JUMP_HEIGHT * TILE,
+);
 // = -√(2 · 1500 · 100.8) ≈ -550 px/s — matches today's -550 by construction
 ```
 
 Key point: **jump velocity is no longer a tuned constant** — it's derived
 from `JUMP_HEIGHT` (design intent) and `GRAVITY`. Tuning jump height means
-editing a number that *is* the number of tiles.
+editing a number that _is_ the number of tiles.
 
 ### 2.2 New movement model — linear, delta-based
 
@@ -104,14 +105,21 @@ spike can't produce a giant step that tunnels through tiles).
 
 ```ts
 // Horizontal — one moveTowards, used for BOTH accelerating and stopping:
-const target = moveInput * MAX_RUN_SPEED_PX;          // moveInput ∈ {-1, 0, 1}
-const rate = moveInput !== 0
-  ? (onGround ? GROUND_ACCEL_PX : AIR_ACCEL_PX)       // accelerating toward ±max
-  : (onGround ? GROUND_FRICTION_PX : AIR_FRICTION_PX);// decelerating toward 0
+const target = moveInput * MAX_RUN_SPEED_PX; // moveInput ∈ {-1, 0, 1}
+const rate =
+  moveInput !== 0
+    ? onGround
+      ? GROUND_ACCEL_PX
+      : AIR_ACCEL_PX // accelerating toward ±max
+    : onGround
+      ? GROUND_FRICTION_PX
+      : AIR_FRICTION_PX; // decelerating toward 0
 velocityX = moveTowards(velocityX, target, rate * dt);
 
 function moveTowards(v: number, target: number, maxDelta: number) {
-  return Math.abs(target - v) <= maxDelta ? target : v + Math.sign(target - v) * maxDelta;
+  return Math.abs(target - v) <= maxDelta
+    ? target
+    : v + Math.sign(target - v) * maxDelta;
 }
 ```
 
@@ -122,14 +130,16 @@ ground friction, air friction) into one uniform, honest formula. The
 
 ```ts
 // Vertical — jump with coyote time + buffering:
-if (onGround) coyoteTimer = COYOTE_TIME; else coyoteTimer -= dt;
-if (jumpJustPressed) bufferTimer = JUMP_BUFFER; else bufferTimer -= dt;
+if (onGround) coyoteTimer = COYOTE_TIME;
+else coyoteTimer -= dt;
+if (jumpJustPressed) bufferTimer = JUMP_BUFFER;
+else bufferTimer -= dt;
 
 if (bufferTimer > 0 && coyoteTimer > 0) {
   velocityY = JUMP_VELOCITY_PX;
   bufferTimer = 0;
-  coyoteTimer = 0;            // no double-jump from the same grace window
-  hooks.onJump?.();           // scene-provided VFX callback
+  coyoteTimer = 0; // no double-jump from the same grace window
+  hooks.onJump?.(); // scene-provided VFX callback
 }
 // Jump-cut (unchanged mechanic, same numbers):
 if (jumpReleased && velocityY < -JUMP_CUT_MIN_SPEED_PX) {
@@ -148,18 +158,18 @@ if both held.
 
 ### 2.3 Preserved numbers, and how they're preserved
 
-| Metric | Today (60fps) | After rework | How |
-|---|---|---|---|
-| Top run speed | 400 px/s (25 t/s) | **same** | `MAX_RUN_SPEED = 25` |
-| Full-hold jump apex | ~6.3 tiles (v₀ 550, g 1500) | **same** | `JUMP_HEIGHT = 6.3` derives v₀ ≈ 550 |
-| Tap-jump minimum | ~1.4 tiles | ~same | same jump-cut multiplier/threshold |
-| Standing-jump gap (hold forward from 0 speed) | ~6.1 tiles | **~6.1 tiles** | `AIR_ACCEL ≈ 23.4 t/s²`: from standstill, ½·375·(0.73s)² ≈ 98px ≈ 6.1 tiles |
-| Full-runway jump gap | ~17.9 tiles | ~18.3 tiles | 400 px/s × full airtime; +0.4 tile from removing frame quantization — accepted |
-| Ground stop distance from max | ~4.1 tiles | **same** | `GROUND_FRICTION = 75 t/s²` unchanged |
-| Time/runway to top speed | ~2s / ~34 tiles | **0.27s / ~3.3 tiles** | the intended "snappy" change |
+| Metric                                        | Today (60fps)               | After rework           | How                                                                            |
+| --------------------------------------------- | --------------------------- | ---------------------- | ------------------------------------------------------------------------------ |
+| Top run speed                                 | 400 px/s (25 t/s)           | **same**               | `MAX_RUN_SPEED = 25`                                                           |
+| Full-hold jump apex                           | ~6.3 tiles (v₀ 550, g 1500) | **same**               | `JUMP_HEIGHT = 6.3` derives v₀ ≈ 550                                           |
+| Tap-jump minimum                              | ~1.4 tiles                  | ~same                  | same jump-cut multiplier/threshold                                             |
+| Standing-jump gap (hold forward from 0 speed) | ~6.1 tiles                  | **~6.1 tiles**         | `AIR_ACCEL ≈ 23.4 t/s²`: from standstill, ½·375·(0.73s)² ≈ 98px ≈ 6.1 tiles    |
+| Full-runway jump gap                          | ~17.9 tiles                 | ~18.3 tiles            | 400 px/s × full airtime; +0.4 tile from removing frame quantization — accepted |
+| Ground stop distance from max                 | ~4.1 tiles                  | **same**               | `GROUND_FRICTION = 75 t/s²` unchanged                                          |
+| Time/runway to top speed                      | ~2s / ~34 tiles             | **0.27s / ~3.3 tiles** | the intended "snappy" change                                                   |
 
 **The deliberate trade-off to be aware of:** because reaching top speed now
-takes ~3.3 tiles instead of ~34, *short-runway jumps get much longer*. Today
+takes ~3.3 tiles instead of ~34, _short-runway jumps get much longer_. Today
 a jump after a 10-frame approach covers ~8.7 tiles; after the rework almost
 any approach with ≥4 tiles of runway covers the full ~18. The standing jump
 (~6.1 tiles) is preserved as the floor. Any existing level that used short
@@ -278,7 +288,7 @@ test so "preserve key numbers" is enforced, not eyeballed:
 - `src/phaser/__tests__/playerPhysics.test.ts` (use the repo's existing
   test runner if one exists; otherwise add `vitest` as a dev dependency —
   it's the standard for Vite projects — with a single `npm run
-  test:physics` script).
+test:physics` script).
 - The test steps the **new** controller math (the pure functions — extract
   `moveTowards` + the jump math so they're testable without Phaser) and
   asserts, at dt = 1/60, dt = 1/30, and dt = 1/144:
@@ -327,7 +337,7 @@ Each step leaves the game runnable; commit per step.
 - [ ] Coyote: can jump just after running off a ledge; buffer: mashing jump right before landing feels responsive
 - [ ] Editor playtest and real game feel identical (same body, same constants, same flip)
 - [ ] Throttle the tab / use a 144Hz monitor if available: movement speed and jump distances unchanged
-- [ ] Existing levels still completable (expect mid-length gaps to be *easier*, per §2.3 — flag any that become trivial)
+- [ ] Existing levels still completable (expect mid-length gaps to be _easier_, per §2.3 — flag any that become trivial)
 - [ ] Enemies with jump AI still path sensibly (gravity fix changes their computed arcs)
 
 ## Implementation notes (post-execution)
@@ -361,7 +371,30 @@ Where the shipped code deviates from the plan above, and why:
    gameScene's was inverted (the knight moonwalked in the real game). Both
    now share `SPRITE_FACES_RIGHT = true` in `playerController.ts`.
 
-Verification shipped: `src/phaser/__tests__/playerPhysics.test.ts` (18 tests,
+### Tuning v2 (2026-08-10, post-playtest)
+
+Parth's feedback after playing the first implementation: the ~6–18-tile
+crossable-gap range was too wide for the AI level designer to reason about,
+coyote time felt slightly long, and top speed arrived after too little
+runway. Retuned (superseding the "preserve key numbers" targets above):
+
+| Metric                            | v1                        | v2                                         |
+| --------------------------------- | ------------------------- | ------------------------------------------ |
+| Top speed                         | 25 t/s (400 px/s)         | **16 t/s (256 px/s)**                      |
+| Gap range (standing → full speed) | ~6.1 → ~17.9 tiles (~3:1) | **~5.4 → ~11.7 tiles (~2.2:1)**            |
+| Runway to top speed               | ~3.3 tiles (0.27s)        | **~6.4 tiles (0.8s)**                      |
+| Ground accel                      | 93.75 t/s²                | **20 t/s²**                                |
+| Air accel                         | 22.5 t/s²                 | **20 t/s² (= ground: uniform control)**    |
+| Air friction                      | 22.5 t/s²                 | **15 t/s²**                                |
+| Coyote time                       | 90ms                      | **60ms**                                   |
+| Stop distance from max            | ~4 tiles                  | ~1.7 tiles (falls out of slower top speed) |
+| Jump height / gravity / buffer    | —                         | unchanged (6.3 tiles / 93.75 t/s² / 100ms) |
+
+Also fixed in v2: jump timers now refresh before the jump check and decay
+after it, so the usable coyote/buffer window matches the constant instead
+of running one frame short.
+
+Verification shipped: `src/phaser/__tests__/playerPhysics.test.ts` (20 tests,
 `npm test`) locks every preserved number at 30/60/144fps with ≤10%
 cross-rate spread. `npx tsc --noEmit` shows no errors in the new modules
 (pre-existing unused-variable noise elsewhere untouched); `npm run build`
