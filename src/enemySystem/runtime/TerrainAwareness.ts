@@ -1,6 +1,8 @@
 // Terrain Awareness System for Environmental Enemy Behaviors
 // Detects pits, platforms, cover, and hazards in the game world
 
+import { GRAVITY_PX } from "../../phaser/playerPhysics";
+
 export interface TerrainInfo {
   // Pit detection
   pitAhead: boolean;
@@ -459,7 +461,7 @@ export class TerrainAwareness {
     fromY: number,
     targetX: number,
     targetY: number,
-    gravity: number = 800,
+    gravity: number = GRAVITY_PX,
   ): { velocityX: number; velocityY: number } | null {
     const dx = targetX - fromX;
     const dy = targetY - fromY;

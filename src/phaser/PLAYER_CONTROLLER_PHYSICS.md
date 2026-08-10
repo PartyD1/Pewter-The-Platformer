@@ -1,5 +1,14 @@
 # Player Controller Physics — What the Constants Actually Mean
 
+> **⚠️ HISTORICAL (2026-08-10):** This doc describes the OLD movement system,
+> which has been replaced. Movement now lives in `playerPhysics.ts`
+> (tile-based constants, linear acceleration, delta-based) and
+> `playerController.ts` (shared by both scenes). See
+> `PLAYER_MOVEMENT_REWORK_PLAN.md` for the new design; the preserved
+> level-design numbers (jump ~6 tiles, standing gap ~6.1 tiles, top speed
+> 25 tiles/s, stop ~4 tiles) are enforced by
+> `__tests__/playerPhysics.test.ts`. Kept for reference.
+
 Source of truth: `gameScene.ts:35-39`, consumed in `handlePlayerMovement()`
 (`gameScene.ts:297-392`). The exact same five literals are duplicated
 independently in `editorScene.ts:1261-1265` for in-editor playtesting — see

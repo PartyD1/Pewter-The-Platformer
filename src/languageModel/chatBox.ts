@@ -1,6 +1,8 @@
 import { getChatResponse } from "./modelConnector.ts";
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { SystemMessage } from "@langchain/core/messages";
+import { buildMovementPromptSection } from "./movementPrompt.ts";
+import { buildDesignPolicySection } from "./designPolicy.ts";
 
 // Persistent history of all chat messages exchanged
 // Expose current chat history for UI rendering
@@ -109,8 +111,12 @@ export function setActiveSelectionBox(
     "You operate in rounds: each round you may call tools, and the results are fed back to you for the next round. You have a maximum of 8 rounds before you must give a final response, so plan your tool calls efficiently. " +
     "Execute the player's requests directly. Only ask for clarification if the player explicitly requests it, or if the instruction is genuinely ambiguous and a reasonable assumption cannot be made. When given a multi-step task, execute all steps in sequence without pausing. " +
     "When summarizing what you did, keep it short and conversational — do not dump raw coordinates, tile IDs, or tool output data into your response. " +
-    "Be friendly. The level must be completable. The player character is 1 tile wide and 1 tile tall and can jump approximately 6 tiles high — keep this in mind when placing platforms, enemies, and obstacles. When creating gaps, a gap of 1 tile is not traversable or fallable by the player; gaps must be 2 or more tiles wide to be meaningful. " +
-    "REQUIRED: You must call the verifyComplete tool once after finishing all other tool calls. Pass your player-facing reply as the 'summary' argument — this is the only text the player will see. Every response must include exactly one call to this tool.";
+    "Be friendly. The level must be completable. " +
+    buildMovementPromptSection() +
+    " " +
+    buildDesignPolicySection() +
+    " " +
+    "REQUIRED: You must call the verifyComplete tool once after finishing all other tool calls. It runs a real reachability check on the level — if it reports problems, fix them with more tool calls and call it again. Pass your player-facing reply as the 'summary' argument — this is the only text the player will see. Every response must include exactly one call to this tool.";
   const isSystemMessage = (msg: any) =>
     msg && msg._getType && msg._getType() === "system";
   if (
@@ -143,6 +149,7 @@ const READ_ONLY_TOOLS = new Set([
   "getWorldFacts",
   "relativeGeneration",
   "verifyComplete",
+  "checkTraversal",
 ]);
 
 /**

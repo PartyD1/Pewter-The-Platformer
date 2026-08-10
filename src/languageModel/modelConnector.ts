@@ -51,7 +51,10 @@ const outdatedInitialSysPrompt =
   "Place Grid of Tiles: Use this tool to place a grid of tiles with a given index or term on a layer when told. Use the tile information and map each tile to the index. " +
   "Get Placed Tiles: Use this tool to retrieve all tiles placed within a selection box. " +
   "PLEASE USE THE WORLD FACTS TOOL TO RECEIVE INFORMATION ABOUT THE LAYER YOU MIGHT NEED TO WORK ON. For example, if the player asks you to place an enemy within a selection, first check where the top of the ground is before placing making sure not to place it within the ground. Same applies to collectables or anything else. The world facts tool is your best guide as to what is within the game world. Use it to your advantage PLEASE. " +
-  "Player size and movement: the player character is 2 tiles wide and 2 tiles tall, and can jump approximately 6 tiles high. Account for this when placing platforms, enemies, and obstacles to ensure the level is navigable and completable. " +
+  // Player size/movement claims removed — they were stale ("2 tiles wide/tall"
+  // contradicted reality). The ACTIVE prompt (chatBox.ts) derives movement
+  // facts from playerPhysics.ts via movementPrompt.ts; do that here too if
+  // this prompt is ever revived.
   "Always be friendly and helpful. Make the level playable and visually consistent. You may offer suggestions occasionally, but you must always follow these rules. " +
   "Undo/Redo: Use the undoRedo tool to revert or re-apply map changes. 'undo' steps back through saved snapshots (each player click and each AI send is a snapshot); 'redo' moves forward. Use 'times' to jump multiple steps.";
 
@@ -240,7 +243,11 @@ export async function getChatResponse(
         if (r.content) output.text.push(r.content);
       } else if (Array.isArray(r.content)) {
         for (const part of r.content) {
-          if (part.type === "text" && typeof part.text === "string" && part.text) {
+          if (
+            part.type === "text" &&
+            typeof part.text === "string" &&
+            part.text
+          ) {
             output.text.push(part.text);
           }
         }
@@ -259,11 +266,15 @@ export async function getChatResponse(
         if (!calledVerify && !verifyNudgeSent && !options?.skipVerify) {
           verifyNudgeSent = true;
           iterations++;
-          console.warn("Pewter responded without calling verifyComplete — resending request.");
+          console.warn(
+            "Pewter responded without calling verifyComplete — resending request.",
+          );
           chatMessageHistory.push(response);
-          chatMessageHistory.push(new HumanMessage(
-            "[SYSTEM]: You forgot to call the verifyComplete tool. Call it now."
-          ));
+          chatMessageHistory.push(
+            new HumanMessage(
+              "[SYSTEM]: You forgot to call the verifyComplete tool. Call it now.",
+            ),
+          );
           response = await llmWithTools.invoke(chatMessageHistory);
           console.log(`Raw LLM response (verify nudge round):`, response);
           continue;
@@ -277,7 +288,9 @@ export async function getChatResponse(
       chatMessageHistory.push(response);
 
       const roundCalls = response.tool_calls ?? [];
-      const mixedWithOthers = roundCalls.length > 1 && roundCalls.some(c => c.name === "verifyComplete");
+      const mixedWithOthers =
+        roundCalls.length > 1 &&
+        roundCalls.some((c) => c.name === "verifyComplete");
 
       // Run all tool calls from this round
       for await (const toolCall of roundCalls) {
@@ -287,7 +300,10 @@ export async function getChatResponse(
           // will re-invoke so the model sees the other tools' results first.
           if (!mixedWithOthers) {
             calledVerify = true;
-            if (typeof toolCall.args?.summary === "string" && toolCall.args.summary) {
+            if (
+              typeof toolCall.args?.summary === "string" &&
+              toolCall.args.summary
+            ) {
               output.text.push(toolCall.args.summary);
             }
           }
@@ -298,11 +314,13 @@ export async function getChatResponse(
           const errorMsg = `Error: Unknown tool "${toolCall.name}".`;
           console.error(errorMsg);
           output.errors.push(errorMsg);
-          chatMessageHistory.push(new ToolMessage({
-            name: toolCall.name,
-            content: errorMsg,
-            tool_call_id: String(toolCall.id ?? ""),
-          }));
+          chatMessageHistory.push(
+            new ToolMessage({
+              name: toolCall.name,
+              content: errorMsg,
+              tool_call_id: String(toolCall.id ?? ""),
+            }),
+          );
           continue;
         }
 
@@ -310,31 +328,45 @@ export async function getChatResponse(
           const result = await tool.invoke(toolCall.args);
           console.log(`Tool called ${toolCall.name} with result:`, result);
 
-          output.toolCalls.push({ name: toolCall.name, args: toolCall.args, result });
-
-          chatMessageHistory.push(new ToolMessage({
+          output.toolCalls.push({
             name: toolCall.name,
-            content: result,
-            tool_call_id: String(toolCall.id ?? ""),
-          }));
+            args: toolCall.args,
+            result,
+          });
+
+          chatMessageHistory.push(
+            new ToolMessage({
+              name: toolCall.name,
+              content: result,
+              tool_call_id: String(toolCall.id ?? ""),
+            }),
+          );
 
           try {
-            if (typeof window !== "undefined" && typeof window.dispatchEvent === "function") {
-              window.dispatchEvent(new CustomEvent("toolCalled", {
-                detail: { name: toolCall.name, args: toolCall.args, result },
-              }));
+            if (
+              typeof window !== "undefined" &&
+              typeof window.dispatchEvent === "function"
+            ) {
+              window.dispatchEvent(
+                new CustomEvent("toolCalled", {
+                  detail: { name: toolCall.name, args: toolCall.args, result },
+                }),
+              );
             }
-          } catch (e) { /* ignore */ }
-
+          } catch (e) {
+            /* ignore */
+          }
         } catch (toolError) {
           const errorMsg = `Error: Tool '${toolCall.name}' failed with args: ${JSON.stringify(toolCall.args)}.\nDetails: ${toolError}`;
           console.error(errorMsg);
           output.errors.push(errorMsg);
-          chatMessageHistory.push(new ToolMessage({
-            name: toolCall.name,
-            content: errorMsg,
-            tool_call_id: String(toolCall.id ?? ""),
-          }));
+          chatMessageHistory.push(
+            new ToolMessage({
+              name: toolCall.name,
+              content: errorMsg,
+              tool_call_id: String(toolCall.id ?? ""),
+            }),
+          );
         }
       }
 

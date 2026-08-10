@@ -1,6 +1,16 @@
 import type { EditorScene } from "../editorScene.ts";
+import { MOVEMENT_CAPABILITIES, runwayNeededForGap } from "../playerPhysics.ts";
+import {
+  computeReachability,
+  isStandable,
+  type TileGridView,
+} from "../../languageModel/reachability.ts";
+import {
+  buildGridView,
+  SPAWN_TILE,
+} from "../../languageModel/sceneReachability.ts";
 
-export type FactCategory = "Structure" | "Collectable" | "Enemy";
+export type FactCategory = "Structure" | "Collectable" | "Enemy" | "Traversal";
 
 export abstract class Fact {
   key: string;
@@ -14,6 +24,17 @@ export abstract class Fact {
   }
 
   abstract toString(): string;
+}
+
+/** A traversal statement phrased against the player's real capabilities. */
+export class TraversalFact extends Fact {
+  constructor(key: string, sentence: string) {
+    super(`traversal:${key}`, "Traversal", sentence);
+  }
+
+  toString(): string {
+    return this.description ?? this.key;
+  }
 }
 
 export class StructureFact extends Fact {
@@ -521,8 +542,110 @@ export class WorldFacts {
           );
         });
         break;
+      case "Traversal":
+        // Computed fresh every call so it can never be stale.
+        facts = this.computeTraversalFacts(xMin, xMax);
+        break;
     }
     return facts;
+  }
+
+  /**
+   * Traversal facts: what the player can actually reach and cross, phrased
+   * against the real movement capabilities (playerPhysics.ts).
+   */
+  private computeTraversalFacts(xMin?: number, xMax?: number): TraversalFact[] {
+    const grid = buildGridView(this.scene);
+    if (!grid) return [];
+    const facts: TraversalFact[] = [];
+
+    const result = computeReachability(grid, SPAWN_TILE);
+    const pct =
+      result.standableCount > 0
+        ? Math.round((100 * result.reachable.size) / result.standableCount)
+        : 100;
+    facts.push(
+      new TraversalFact(
+        "summary",
+        `From the player spawn, ${result.reachable.size} of ${result.standableCount} standable tiles (${pct}%) are reachable.`,
+      ),
+    );
+    for (const [i, d] of result.diagnoses.entries()) {
+      facts.push(new TraversalFact(`unreachable:${i}`, d));
+    }
+
+    // Analyze full-depth pits: gap width vs the run-up the left platform
+    // actually provides.
+    for (const pit of this.findPits(grid)) {
+      if (
+        (xMin !== undefined && pit.xEnd < xMin) ||
+        (xMax !== undefined && pit.xStart > xMax)
+      ) {
+        continue;
+      }
+      const width = pit.xEnd - pit.xStart + 1;
+      const needed = runwayNeededForGap(width);
+      let sentence: string;
+      if (needed === null) {
+        sentence = `The pit from x=${pit.xStart} to x=${pit.xEnd} is ${width} tiles wide — IMPOSSIBLE to jump (maximum is ${MOVEMENT_CAPABILITIES.maxGapTiles} tiles).`;
+      } else {
+        sentence =
+          `The pit from x=${pit.xStart} to x=${pit.xEnd} is ${width} tiles wide — needs at least ${needed} tile(s) of run-up` +
+          (pit.leftRunway !== null
+            ? `; the platform to its left provides ${pit.leftRunway}, so it is ${pit.leftRunway >= needed ? "crossable" : "NOT crossable"} left-to-right as built.`
+            : ".");
+      }
+      facts.push(new TraversalFact(`pit:${pit.xStart}-${pit.xEnd}`, sentence));
+    }
+    return facts;
+  }
+
+  /** Ranges of columns containing no solid tiles at all (bottomless pits). */
+  private findPits(grid: TileGridView): {
+    xStart: number;
+    xEnd: number;
+    leftRunway: number | null;
+  }[] {
+    const columnEmpty = (x: number): boolean => {
+      for (let y = 0; y < grid.height; y++) {
+        if (grid.isSolid(x, y)) return false;
+      }
+      return true;
+    };
+    const pits: { xStart: number; xEnd: number; leftRunway: number | null }[] =
+      [];
+    let runStart: number | null = null;
+    for (let x = 0; x <= grid.width; x++) {
+      const empty = x < grid.width && columnEmpty(x);
+      if (empty && runStart === null) runStart = x;
+      if (!empty && runStart !== null) {
+        const xStart = runStart;
+        const xEnd = x - 1;
+        runStart = null;
+        // Interior pits only — a map edge is not a jumpable gap.
+        if (xStart === 0 || xEnd === grid.width - 1) continue;
+        // Run-up available on the left platform's surface.
+        let leftRunway: number | null = null;
+        let surfaceY: number | null = null;
+        for (let y = 0; y < grid.height; y++) {
+          if (isStandable(grid, xStart - 1, y)) {
+            surfaceY = y;
+            break;
+          }
+        }
+        if (surfaceY !== null) {
+          leftRunway = 0;
+          while (
+            leftRunway < 7 &&
+            isStandable(grid, xStart - 2 - leftRunway, surfaceY)
+          ) {
+            leftRunway++;
+          }
+        }
+        pits.push({ xStart, xEnd, leftRunway });
+      }
+    }
+    return pits;
   }
 
   toString(): string {

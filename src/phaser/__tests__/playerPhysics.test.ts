@@ -1,0 +1,342 @@
+import { describe, expect, it } from "vitest";
+import {
+  createMovementState,
+  GRAVITY_PX,
+  JUMP_VELOCITY_PX,
+  MAX_RUN_SPEED_PX,
+  MOVEMENT_CAPABILITIES,
+  stepMovement,
+  TERMINAL_VELOCITY_PX,
+  TILE,
+} from "../playerPhysics";
+
+/**
+ * Frame-by-frame simulator mirroring how Phaser Arcade integrates around
+ * stepMovement(): controller runs first, then the world applies gravity
+ * (semi-implicit Euler), moves the body, and resolves floor collision.
+ * Floor is at y = 0; up is negative y (Phaser convention).
+ */
+class Sim {
+  x = 0;
+  y = 0;
+  vx = 0;
+  vy = 0;
+  onGround = true;
+  floor = true;
+  minY = 0;
+  jumps = 0;
+  frame = 0;
+  private state = createMovementState();
+  private prevJump = false;
+  private dt: number;
+
+  constructor(dt: number) {
+    this.dt = dt;
+  }
+
+  step(move: -1 | 0 | 1, jump: boolean) {
+    const jumpJustPressed = jump && !this.prevJump;
+    this.prevJump = jump;
+
+    const r = stepMovement(
+      this.state,
+      { moveInput: move, jumpHeld: jump, jumpJustPressed },
+      this.vx,
+      this.vy,
+      this.onGround,
+      this.dt,
+    );
+    this.vx = r.velocityX;
+    this.vy = r.velocityY;
+    if (r.jumped) this.jumps++;
+
+    // World step (Arcade equivalent)
+    this.vy = Math.min(this.vy + GRAVITY_PX * this.dt, TERMINAL_VELOCITY_PX);
+    this.x += this.vx * this.dt;
+    this.y += this.vy * this.dt;
+    if (this.floor && this.y >= 0 && this.vy > 0) {
+      this.y = 0;
+      this.vy = 0;
+      this.onGround = true;
+    } else {
+      this.onGround = this.floor && this.y === 0 && this.vy === 0;
+    }
+    this.minY = Math.min(this.minY, this.y);
+    this.frame++;
+  }
+
+  get apexTiles() {
+    return -this.minY / TILE;
+  }
+  get xTiles() {
+    return this.x / TILE;
+  }
+}
+
+const FPS_60 = 1 / 60;
+const FPS_30 = 1 / 30;
+const FPS_144 = 1 / 144;
+const ALL_RATES = [FPS_30, FPS_60, FPS_144];
+
+/** Jump on frame 0 with `holdFrames` of jump held, run until landing. */
+function jumpAndLand(dt: number, holdFrames: number, move: -1 | 0 | 1 = 0) {
+  const sim = new Sim(dt);
+  sim.step(move, true); // jump fires here
+  expect(sim.jumps).toBe(1);
+  let frames = 1;
+  while (!sim.onGround && frames < 1000) {
+    sim.step(move, frames < holdFrames);
+    frames++;
+  }
+  expect(sim.onGround).toBe(true);
+  return sim;
+}
+
+describe("preserved constants", () => {
+  it("jump impulse derives to the legacy -550 px/s", () => {
+    expect(JUMP_VELOCITY_PX).toBeCloseTo(-550, 0);
+  });
+
+  it("top speed derives to 256 px/s (16 tiles/s)", () => {
+    expect(MAX_RUN_SPEED_PX).toBe(256);
+  });
+});
+
+describe("jump height", () => {
+  it("full-hold apex is ~6 tiles at 60fps (preserved)", () => {
+    const sim = jumpAndLand(FPS_60, 10_000);
+    expect(sim.apexTiles).toBeGreaterThan(5.8);
+    expect(sim.apexTiles).toBeLessThan(6.4);
+  });
+
+  it("full-hold apex is consistent across frame rates", () => {
+    const apexes = ALL_RATES.map((dt) => jumpAndLand(dt, 10_000).apexTiles);
+    for (const apex of apexes) {
+      expect(apex).toBeGreaterThan(5.6);
+      expect(apex).toBeLessThan(6.5);
+    }
+    const spread =
+      (Math.max(...apexes) - Math.min(...apexes)) / Math.max(...apexes);
+    expect(spread).toBeLessThan(0.1);
+  });
+
+  it("tap jump is ~1.4 tiles (preserved)", () => {
+    const sim = jumpAndLand(FPS_60, 1);
+    expect(sim.apexTiles).toBeGreaterThan(1.1);
+    expect(sim.apexTiles).toBeLessThan(1.8);
+  });
+
+  it("mid release (5 frames) is ~3 tiles (preserved)", () => {
+    const sim = jumpAndLand(FPS_60, 5);
+    expect(sim.apexTiles).toBeGreaterThan(2.5);
+    expect(sim.apexTiles).toBeLessThan(3.5);
+  });
+
+  it("jump-cut applies only once", () => {
+    const sim = new Sim(FPS_60);
+    sim.step(0, true);
+    sim.step(0, true);
+    sim.step(0, false); // release → cut this frame
+    const cutVy = sim.vy;
+    sim.step(0, false); // must NOT cut again: only gravity applies
+    expect(sim.vy).toBeCloseTo(cutVy + GRAVITY_PX * FPS_60, 5);
+  });
+});
+
+describe("horizontal movement", () => {
+  it("needs a real runway: top speed takes ~0.8s / ~6.4 tiles, at all frame rates", () => {
+    for (const dt of ALL_RATES) {
+      const sim = new Sim(dt);
+      let t = 0;
+      while (sim.vx < MAX_RUN_SPEED_PX && t < 2) {
+        sim.step(1, false);
+        t += dt;
+      }
+      expect(sim.vx).toBe(MAX_RUN_SPEED_PX);
+      expect(t).toBeGreaterThan(0.7); // not instant — run-up must matter
+      expect(t).toBeLessThanOrEqual(0.9);
+      expect(sim.xTiles).toBeGreaterThan(5.8);
+      expect(sim.xTiles).toBeLessThan(7.5); // 30fps float edge adds one frame
+    }
+  });
+
+  it("stops from top speed in ~1.7 tiles on the ground", () => {
+    const sim = new Sim(FPS_60);
+    sim.vx = MAX_RUN_SPEED_PX;
+    while (sim.vx > 0) sim.step(0, false);
+    expect(sim.xTiles).toBeGreaterThan(1.4);
+    expect(sim.xTiles).toBeLessThan(2.0);
+  });
+
+  it("stopping distance is consistent across frame rates", () => {
+    const distances = ALL_RATES.map((dt) => {
+      const sim = new Sim(dt);
+      sim.vx = MAX_RUN_SPEED_PX;
+      while (sim.vx > 0) sim.step(0, false);
+      return sim.xTiles;
+    });
+    // Absolute bound: at short distances (~1.7 tiles) Euler discretization
+    // makes relative spread misleading.
+    const spread = Math.max(...distances) - Math.min(...distances);
+    expect(spread).toBeLessThan(0.25);
+  });
+});
+
+describe("jump gap range (~5.4 tiles standing → ~11.7 tiles full speed)", () => {
+  it("standing jump covers ~5.4 tiles at 60fps", () => {
+    const sim = jumpAndLand(FPS_60, 10_000, 1);
+    expect(sim.xTiles).toBeGreaterThan(4.9);
+    expect(sim.xTiles).toBeLessThan(5.9);
+  });
+
+  it("full-speed jump covers ~11.7 tiles at 60fps", () => {
+    const sim = new Sim(FPS_60);
+    sim.vx = MAX_RUN_SPEED_PX;
+    sim.step(1, true); // jump at top speed
+    expect(sim.jumps).toBe(1);
+    let frames = 1;
+    while (!sim.onGround && frames < 1000) {
+      sim.step(1, true);
+      frames++;
+    }
+    expect(sim.xTiles).toBeGreaterThan(11.0);
+    expect(sim.xTiles).toBeLessThan(12.4);
+  });
+
+  it("gap range stays within ~2:1 so the AI can reason about crossability", () => {
+    const standing = jumpAndLand(FPS_60, 10_000, 1).xTiles;
+    const full = new Sim(FPS_60);
+    full.vx = MAX_RUN_SPEED_PX;
+    full.step(1, true);
+    let frames = 1;
+    while (!full.onGround && frames < 1000) {
+      full.step(1, true);
+      frames++;
+    }
+    expect(full.xTiles / standing).toBeLessThan(2.4);
+  });
+
+  it("standing jump is consistent across frame rates", () => {
+    const gaps = ALL_RATES.map((dt) => jumpAndLand(dt, 10_000, 1).xTiles);
+    const spread = (Math.max(...gaps) - Math.min(...gaps)) / Math.max(...gaps);
+    expect(spread).toBeLessThan(0.1);
+  });
+});
+
+describe("MOVEMENT_CAPABILITIES cross-check (AI facts vs real physics)", () => {
+  /** Run `runwayTiles` from a standstill, jump, return flight distance. */
+  function flightDistanceAfterRunway(runwayTiles: number): number {
+    const sim = new Sim(FPS_60);
+    while (sim.x < runwayTiles * TILE) sim.step(1, false);
+    const takeoffX = sim.x;
+    sim.step(1, true);
+    expect(sim.jumps).toBe(1);
+    let frames = 1;
+    while (!sim.onGround && frames < 1000) {
+      sim.step(1, true);
+      frames++;
+    }
+    return (sim.x - takeoffX) / TILE;
+  }
+
+  it("every gap-ladder rung is crossable in simulation, with margin", () => {
+    for (const rung of MOVEMENT_CAPABILITIES.gapForRunway) {
+      const flight = flightDistanceAfterRunway(rung.runwayTiles);
+      expect(flight).toBeGreaterThan(rung.gapTiles + 0.15);
+    }
+  });
+
+  it("impossibleGapTiles is uncrossable even with unlimited runway", () => {
+    expect(flightDistanceAfterRunway(50)).toBeLessThan(
+      MOVEMENT_CAPABILITIES.impossibleGapTiles,
+    );
+  });
+
+  it("guaranteed step-up clears the sim apex; impossible wall exceeds it", () => {
+    const apex = jumpAndLand(FPS_60, 10_000).apexTiles;
+    expect(apex).toBeGreaterThan(MOVEMENT_CAPABILITIES.maxStepUpTiles + 0.5);
+    expect(apex).toBeLessThan(MOVEMENT_CAPABILITIES.impossibleWallTiles);
+  });
+
+  it("ladder is monotonic and body is sub-tile", () => {
+    const gaps = MOVEMENT_CAPABILITIES.gapForRunway.map((r) => r.gapTiles);
+    for (let i = 1; i < gaps.length; i++) {
+      expect(gaps[i]).toBeGreaterThanOrEqual(gaps[i - 1]);
+    }
+    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.width).toBeLessThan(1);
+    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.height).toBeLessThan(1);
+    expect(MOVEMENT_CAPABILITIES.fallsThroughOneTileGap).toBe(true);
+  });
+});
+
+describe("coyote time", () => {
+  function runOffLedge(fallFrames: number) {
+    const sim = new Sim(FPS_60);
+    for (let i = 0; i < 5; i++) sim.step(1, false); // run on ground
+    sim.floor = false; // ledge ends
+    sim.onGround = false;
+    for (let i = 0; i < fallFrames; i++) sim.step(1, false);
+    sim.step(1, true); // press jump
+    return sim;
+  }
+
+  it("jump still fires ~50ms after leaving the ledge", () => {
+    expect(runOffLedge(3).jumps).toBe(1);
+  });
+
+  it("jump does NOT fire ~83ms after leaving the ledge", () => {
+    expect(runOffLedge(5).jumps).toBe(0);
+  });
+
+  it("cannot double-jump from one grace window", () => {
+    const sim = jumpAndLand(FPS_60, 2);
+    // Mid-air press during the same jump must not fire again
+    const jumpsAfterLanding = sim.jumps;
+    expect(jumpsAfterLanding).toBe(1);
+    const sim2 = new Sim(FPS_60);
+    sim2.step(0, true);
+    sim2.step(0, false);
+    sim2.step(0, true); // re-press while rising
+    sim2.step(0, true);
+    expect(sim2.jumps).toBe(1);
+  });
+});
+
+describe("jump buffering", () => {
+  /** Drop from 100px up; optionally press jump `pressFramesBeforeLand` early. */
+  function drop(pressFramesBeforeLand: number | null) {
+    // First find the landing frame without pressing.
+    const probe = new Sim(FPS_60);
+    probe.floor = true;
+    probe.y = -100;
+    probe.onGround = false;
+    let landFrame = 0;
+    while (!probe.onGround && landFrame < 1000) {
+      probe.step(0, false);
+      landFrame++;
+    }
+    // Re-run with a buffered press.
+    const sim = new Sim(FPS_60);
+    sim.y = -100;
+    sim.onGround = false;
+    for (let f = 0; f < landFrame + 5; f++) {
+      const press =
+        pressFramesBeforeLand !== null &&
+        f >= landFrame - pressFramesBeforeLand;
+      sim.step(0, press);
+    }
+    return sim;
+  }
+
+  it("press ~83ms before landing fires the jump on landing", () => {
+    expect(drop(5).jumps).toBe(1);
+  });
+
+  it("press ~150ms before landing is NOT buffered", () => {
+    expect(drop(9).jumps).toBe(0);
+  });
+
+  it("no press, no jump", () => {
+    expect(drop(null).jumps).toBe(0);
+  });
+});
