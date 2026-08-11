@@ -275,15 +275,29 @@ export function stepMovement(
   // frame of ground-strength acceleration, whose size depends on dt.
   const airborne = !onGround || jumped;
   const targetVelocity = input.moveInput * MAX_RUN_SPEED_PX;
-  const rate =
-    input.moveInput !== 0
-      ? airborne
-        ? AIR_ACCEL_PX
-        : GROUND_ACCEL_PX
-      : airborne
-        ? AIR_FRICTION_PX
-        : GROUND_FRICTION_PX;
-  const newVelocityX = moveTowards(velocityX, targetVelocity, rate * dt);
+
+  let newVelocityX;
+
+  const changingDirection =
+    input.moveInput !== 0 &&
+    velocityX !== 0 &&
+    Math.sign(input.moveInput) !== Math.sign(velocityX);
+
+  if (changingDirection) {
+    const turnRate = onGround ? GROUND_ACCEL_PX * 3 : AIR_ACCEL_PX * 2;
+
+    newVelocityX = moveTowards(velocityX, targetVelocity, turnRate * dt);
+  } else {
+    const rate =
+      input.moveInput !== 0
+        ? airborne
+          ? AIR_ACCEL_PX
+          : GROUND_ACCEL_PX
+        : airborne
+          ? AIR_FRICTION_PX
+          : GROUND_FRICTION_PX;
+    newVelocityX = moveTowards(velocityX, targetVelocity, rate * dt);
+  }
 
   return { velocityX: newVelocityX, velocityY: newVelocityY, jumped };
 }
