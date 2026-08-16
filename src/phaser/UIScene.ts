@@ -8,6 +8,7 @@ import { EditorScene } from "./editorScene.ts";
 import { SpriteGenerator } from "../enemySystem/sprite/SpriteGenerator.ts";
 import "./chatbox.css";
 import { WorldFacts } from "./ExternalClasses/worldFacts.ts";
+import { PLAYER_PHYSICS, TILE } from "./playerPhysics"; // Adjust path to your playerPhysics file
 
 // Set the CSS variable for the tileset background-image once at module load so
 // the correct absolute URL is used regardless of whether CSS is injected (dev)
@@ -28,6 +29,17 @@ export class UIScene extends Phaser.Scene {
   //Variables
 
   //Data
+  private speedHudDom!: Phaser.GameObjects.DOMElement;
+  private speedValEl: HTMLElement | null = null;
+  private accValEl: HTMLElement | null = null;
+  private tilesValEl: HTMLElement | null = null;
+  private tilesAccValEl: HTMLElement | null = null;
+  private vxValEl: HTMLElement | null = null;
+  private vyValEl: HTMLElement | null = null;
+  private axValEl: HTMLElement | null = null;
+  private ayValEl: HTMLElement | null = null;
+  private groundedBadgeEl: HTMLElement | null = null;
+
   private currentBlock: string = "";
   private collectables: string[] = ["Coin", "Fruit"];
   private terrainBlocks: string[] = [
@@ -106,6 +118,103 @@ export class UIScene extends Phaser.Scene {
   create() {
     // Transparent background
     //this.cameras.main.setBackgroundColor("rgba(0,0,0,0.3)");
+
+    // In create(): Add DOM HUD element
+    this.speedHudDom = this.add
+      .dom(15, 75)
+      .createFromHTML(
+        `
+      <div class="pt-speed-hud" style="
+        background: rgba(15, 15, 25, 0.85);
+        backdrop-filter: blur(8px);
+        border: 1px solid rgba(255, 255, 255, 0.15);
+        border-radius: 8px;
+        padding: 10px 14px;
+        color: #fff;
+        font-family: monospace;
+        font-size: 13px;
+        pointer-events: none;
+        box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+        min-width: 220px;
+      ">
+        <div style="font-size: 10px; text-transform: uppercase; letter-spacing: 1px; opacity: 0.6; margin-bottom: 6px;">
+          Player Physics HUD
+        </div>
+        
+        <!-- Speed Gauge -->
+        <div style="margin-bottom: 8px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span>Speed:</span>
+            <strong id="pt-speed-val" style="color: #4facfe;">0.0 px/s</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; opacity: 0.8;">
+            <span>Tiles/sec:</span>
+            <span id="pt-tiles-val" style="color: #00f2fe;">0.0 t/s</span>
+          </div>
+        </div>
+
+        <!-- Acceleration Gauge -->
+        <div style="margin-bottom: 8px;">
+          <div style="display: flex; justify-content: space-between; margin-bottom: 2px;">
+            <span>Acceleration:</span>
+            <strong id="pt-acc-val" style="color: #4facfe;">0.0 px/s^2</strong>
+          </div>
+          <div style="display: flex; justify-content: space-between; font-size: 11px; opacity: 0.8;">
+            <span>Tiles/sec^2:</span>
+            <span id="pt-tiles-acc-val" style="color: #00f2fe;">0.0 t/s^2</span>
+          </div>
+        </div>
+
+        <!-- Velocity Component Vectors -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 6px;">
+          <div>Vx: <strong id="pt-vx-val" style="color: #aaa;">0.0</strong></div>
+          <div>Vy: <strong id="pt-vy-val" style="color: #aaa;">0.0</strong></div>
+        </div>
+        
+        <!-- Acceleration Component Vectors -->
+        <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px; padding-top: 6px;">
+          <div>Ax: <strong id="pt-ax-val" style="color: #aaa;">0.0</strong></div>
+          <div>Ay: <strong id="pt-ay-val" style="color: #aaa;">0.0</strong></div>
+        </div>
+
+        <!-- State Badges -->
+        <div style="display: flex; gap: 6px; margin-top: 8px; font-size: 10px;">
+          <span id="pt-grounded-badge" style="background: #333; padding: 2px 6px; border-radius: 4px;">AIRBORNE</span>
+        </div>
+      </div>
+    `,
+      )
+      .setOrigin(0, 0)
+      .setDepth(1002);
+
+    // Cache DOM references
+    this.speedValEl = this.speedHudDom.getChildByID(
+      "pt-speed-val",
+    ) as HTMLElement | null;
+    this.accValEl = this.speedHudDom.getChildByID(
+      "pt-acc-val",
+    ) as HTMLElement | null;
+    this.tilesValEl = this.speedHudDom.getChildByID(
+      "pt-tiles-val",
+    ) as HTMLElement | null;
+    this.tilesAccValEl = this.speedHudDom.getChildByID(
+      "pt-tiles-acc-val",
+    ) as HTMLElement | null;
+    this.vxValEl = this.speedHudDom.getChildByID(
+      "pt-vx-val",
+    ) as HTMLElement | null;
+    this.vyValEl = this.speedHudDom.getChildByID(
+      "pt-vy-val",
+    ) as HTMLElement | null;
+    this.axValEl = this.speedHudDom.getChildByID(
+      "pt-ax-val",
+    ) as HTMLElement | null;
+    this.ayValEl = this.speedHudDom.getChildByID(
+      "pt-ay-val",
+    ) as HTMLElement | null;
+    this.groundedBadgeEl = this.speedHudDom.getChildByID(
+      "pt-grounded-badge",
+    ) as HTMLElement | null;
 
     // Build UI panel container
     this.panel = this.add.container(-100, 0);
@@ -584,6 +693,66 @@ export class UIScene extends Phaser.Scene {
     });
   }
 
+  private prevVx = 0;
+  private prevVy = 0;
+
+  update(time: number, delta: number): void {
+    try {
+      const editorScene = this.scene.get("editorScene") as any;
+      const player = editorScene?.player;
+
+      if (player && player.body) {
+        const body = player.body as Phaser.Physics.Arcade.Body;
+
+        const vx = body.velocity.x;
+        const vy = body.velocity.y;
+
+        const deltaSec = delta / 1000;
+        const ax = deltaSec > 0 ? (vx - this.prevVx) / deltaSec : 0;
+        const ay = deltaSec > 0 ? (vy - this.prevVy) / deltaSec : 0;
+
+        this.prevVx = vx;
+        this.prevVy = vy;
+
+        // Linear Speed: sqrt(vx^2 + vy^2)
+        const speedPx = Math.sqrt(vx * vx + vy * vy);
+        const accPx = Math.sqrt(ax * ax + ay * ay);
+
+        const speedTiles = speedPx / TILE;
+        const accTiles = accPx / TILE;
+
+        // Grounded status
+        const isGrounded = body.blocked.down || body.touching.down;
+
+        // Update DOM Text
+        if (this.speedValEl)
+          this.speedValEl.textContent = `${speedPx.toFixed(1)} px/s`;
+        if (this.accValEl)
+          this.accValEl.textContent = `${accPx.toFixed(1)} px/s^2`;
+        if (this.tilesValEl)
+          this.tilesValEl.textContent = `${speedTiles.toFixed(2)} t/s / ${PLAYER_PHYSICS.MAX_RUN_SPEED} max`;
+        if (this.tilesAccValEl)
+          this.tilesAccValEl.textContent = `${accTiles.toFixed(2)} t/s^2 / ${PLAYER_PHYSICS.GROUND_ACCEL} max`;
+        if (this.vxValEl) this.vxValEl.textContent = vx.toFixed(1);
+        if (this.vyValEl) this.vyValEl.textContent = vy.toFixed(1);
+        if (this.axValEl) this.axValEl.textContent = ax.toFixed(1);
+        if (this.ayValEl) this.ayValEl.textContent = ay.toFixed(1);
+
+        // Update Grounded Status Badge
+        if (this.groundedBadgeEl) {
+          this.groundedBadgeEl.textContent = isGrounded
+            ? "GROUNDED"
+            : "AIRBORNE";
+          this.groundedBadgeEl.style.background = isGrounded
+            ? "#2e7d32"
+            : "#c62828";
+        }
+      }
+    } catch (e) {
+      // Ignore frame errors if scene/player is initializing
+    }
+  }
+
   //Stuff to set up the selection box:
 
   public populateBlocks(blocks: string[]) {
@@ -971,6 +1140,9 @@ export class UIScene extends Phaser.Scene {
   private startGame() {
     console.log("Play button clicked!");
     (this.scene.get("editorScene") as EditorScene).startGame();
-    this.scene.stop("UIScene");
+    if (this.chatBox) this.chatBox.setVisible(false);
+    if (this.toolbarDom) this.toolbarDom.setVisible(false);
+    if (this.speedHudDom) this.speedHudDom.setVisible(true);
+    this.game.events.emit("ui:startGame");
   }
 }
