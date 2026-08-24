@@ -4,6 +4,7 @@ import {
   HUMAN_HARD_TIER,
   JUMP_TIERS,
   latitudeForGap,
+  maxGapAtRate,
   solveJump,
   SOLVER_FRAME_RATES,
   TIER_LATITUDE_MS,
@@ -91,6 +92,31 @@ describe("latitude semantics", () => {
       expect(latitudeForGap(s, spec.impossibleTiles)).toBe(0);
       expect(tierForGap(s, spec.impossibleTiles)).toBe("IMPOSSIBLE");
       expect(latitudeForGap(s, spec.ultraTiles + 0.5)).toBe(0);
+    }
+  });
+
+  it("impossibleTiles is impossible at EVERY frame rate, not just the worst", () => {
+    // The requirable tiers come from the worst frame rate; the impossible
+    // bound has to come from the best one. Deriving both from the worst
+    // makes impossibleTiles too small, and reachability then reports dead
+    // ends that a high-refresh player walks straight past.
+    for (const runwayTiles of RUNWAYS) {
+      const s: JumpSituation = { runwayTiles, deltaYTiles: 0 };
+      const spec = solveJump(s);
+      for (const dt of SOLVER_FRAME_RATES) {
+        expect(
+          maxGapAtRate(s, dt),
+          `runway=${runwayTiles} dt=${dt.toFixed(4)}`,
+        ).toBeLessThan(spec.impossibleTiles);
+      }
+    }
+  });
+
+  it("the best-case ceiling is never below the everywhere-safe maximum", () => {
+    for (const runwayTiles of RUNWAYS) {
+      const spec = solveJump({ runwayTiles, deltaYTiles: 0 });
+      expect(spec.bestCaseUltraTiles).toBeGreaterThanOrEqual(spec.ultraTiles);
+      expect(spec.impossibleTiles).toBeGreaterThan(spec.bestCaseUltraTiles);
     }
   });
 

@@ -40,15 +40,14 @@ const BODY_W = PLAYER_BODY_PX.width;
 const BODY_H = PLAYER_BODY_PX.height;
 
 /**
- * Horizontal overlap (px) required with the target tile to count as a
- * landing rather than a corner clip.
+ * Phaser's `World.TILE_BIAS` default.
  *
- * Arcade separates a tile overlap on the axis of least penetration, so a
- * body that crosses the target's surface with only a hair of x-overlap can
- * be ejected sideways into the pit instead of seated on top. Demanding a
- * full pixel keeps the solver on the safe side of that coin-flip.
+ * `TileCheckY` refuses to separate vertically when the body has sunk more
+ * than this far into the tile in one frame (it assumes the body tunnelled in
+ * from somewhere else), so a landing that arrives deeper than TILE_BIAS
+ * simply falls through.
  */
-const LANDING_OVERLAP_PX = 1;
+const TILE_BIAS_PX = 16;
 
 /** Frame rates the solver must satisfy simultaneously. */
 export const SOLVER_FRAME_RATES = [1 / 30, 1 / 60, 1 / 144] as const;
@@ -108,13 +107,27 @@ export interface JumpSituation {
 }
 
 export interface JumpSpectrum {
-  /** Largest gap (tiles) clearable at each tier, worst case across rates. */
+  /**
+   * Largest gap (tiles) clearable at each tier, WORST case across frame
+   * rates — i.e. safe to require, because it works on every machine.
+   */
   guaranteedTiles: number;
   normalTiles: number;
   expertTiles: number;
-  /** The literal maximum. Frame-perfect; never require it. */
+  /** The literal maximum that still works everywhere. Never require it. */
   ultraTiles: number;
-  /** Nothing at or above this width lands, at any timing, at any frame rate. */
+  /**
+   * The absolute physical ceiling, BEST case across frame rates.
+   *
+   * Deliberately a different statistic from `ultraTiles`. "Can I require
+   * this?" is a question about the worst machine; "is this flatly
+   * impossible?" is a question about the best one. Deriving the impossible
+   * bound from the worst case would declare gaps unreachable that a 144Hz
+   * player clears comfortably — and the reachability checker would then
+   * report false dead ends.
+   */
+  bestCaseUltraTiles: number;
+  /** Nothing at or above this width lands, at any timing, on ANY machine. */
   impossibleTiles: number;
   /** Jump-timing slop (ms) available at each tier's gap. */
   latitudeMs: Record<JumpTier, number>;
@@ -126,8 +139,6 @@ interface SimFrame {
   right: number;
   /** Body's bottom edge, px. 0 = takeoff surface, + = below it. */
   bottom: number;
-  /** `bottom` on the previous frame — the "came from above" test. */
-  prevBottom: number;
   vy: number;
   /** True once the body has lost all contact with the takeoff platform. */
   offPlatform: boolean;
@@ -197,7 +208,6 @@ function simulate(
 
     // Arcade integrates gravity itself, after the controller runs.
     vy = Math.min(vy + GRAVITY_PX * dt, TERMINAL_VELOCITY_PX);
-    const prevBottom = bottom;
     left += vx * dt;
     bottom += vy * dt;
 
@@ -225,7 +235,6 @@ function simulate(
     frames.push({
       right: left + BODY_W,
       bottom,
-      prevBottom,
       vy,
       offPlatform: everOffPlatform,
     });
@@ -238,16 +247,26 @@ function simulate(
 /**
  * Which gap widths does this trajectory land on?
  *
- * A target of width-`G` sits with its leading face at x = G and its surface
- * at y = `targetY`. The jump resolves at the first frame where the body is
- * simultaneously below that surface and horizontally into the target: if it
- * arrived by descending across the surface that is a landing, otherwise it
- * is the body smacking into the leading face.
+ * A gap of `G` puts the target's leading face at x = G and its surface at
+ * y = `targetY`. The jump resolves on the first frame the body overlaps that
+ * target box, and the outcome is decided the way Phaser's `SeparateTile`
+ * decides it: compare how far the body has sunk below the surface against
+ * how far it has pushed past the face, and separate on whichever axis is
+ * *less* penetrated. Sink less than you overlap and you get seated on top;
+ * sink more and you get shoved back out into the pit.
+ *
+ * That is far more forgiving than "must cross the surface cleanly from
+ * above" — Arcade lands corner clips routinely, and modelling it any other
+ * way under-reports the true maximum. (Verified against the real engine in
+ * __tests__/jumpSolverEngine.test.ts, which is what caught the earlier,
+ * stricter rule.)
  *
  * Rather than re-simulating per candidate gap, we sweep the frames once and
- * let each one "claim" the band of gaps it is the deciding frame for. The
- * body only moves right, so frame f decides every gap between the previous
- * frame's reach and its own.
+ * let each one claim the band of gaps it is the deciding frame for: the body
+ * only ever moves right, so frame f decides every gap between the previous
+ * frame's reach and its own. Within that band the landing condition
+ * `sink ≤ overlap` rearranges to `G ≤ right − sink`, giving the band's
+ * landing sub-range in closed form.
  */
 function gapSpansFor(frames: SimFrame[], targetY: number): GapSpan[] {
   const spans: GapSpan[] = [];
@@ -255,13 +274,13 @@ function gapSpansFor(frames: SimFrame[], targetY: number): GapSpan[] {
   for (const fr of frames) {
     if (!fr.offPlatform) continue;
     if (fr.bottom <= targetY) continue; // still above the target surface
-    const reach = fr.right - LANDING_OVERLAP_PX;
-    if (reach <= cursor) continue; // an earlier frame already decided these
-    // Descending across the surface = landing; anything else = face hit.
-    if (fr.prevBottom <= targetY && fr.vy > 0) {
-      spans.push({ min: cursor, max: reach });
+    if (fr.right <= cursor) continue; // an earlier frame already decided these
+    const sink = fr.bottom - targetY;
+    if (fr.vy > 0 && sink <= TILE_BIAS_PX) {
+      const max = fr.right - sink;
+      if (max > cursor) spans.push({ min: cursor, max });
     }
-    cursor = reach;
+    cursor = fr.right;
   }
   return spans;
 }
@@ -390,6 +409,11 @@ export function findOptimalInput(
   return solveRate(dt, s).best;
 }
 
+/** Widest gap (tiles) clearable at one specific frame rate. */
+export function maxGapAtRate(s: JumpSituation, dt: number): number {
+  return solveRate(dt, s).maxGapPx / TILE;
+}
+
 /** Longest contiguous run of jump frames that clears `gapPx`, in ms. */
 function latitudeMsFor(sol: RateSolution, gapPx: number): number {
   let best = 0;
@@ -455,8 +479,10 @@ export function solveJump(s: JumpSituation): JumpSpectrum {
   if (hit) return hit;
 
   const sols = SOLVER_FRAME_RATES.map((dt) => solveRate(dt, s));
-  // A gap must be clearable at EVERY frame rate.
+  // Requirable = clearable at EVERY frame rate. Impossible = clearable at
+  // NONE of them. Two different statistics over the same solve.
   const ultraPx = Math.min(...sols.map((r) => r.maxGapPx));
+  const bestCaseUltraPx = Math.max(...sols.map((r) => r.maxGapPx));
 
   const gapFor = (tier: JumpTier) =>
     largestGapWithLatitude(sols, ultraPx, TIER_LATITUDE_MS[tier]) / TILE;
@@ -465,13 +491,15 @@ export function solveJump(s: JumpSituation): JumpSpectrum {
   const normalTiles = gapFor("NORMAL");
   const expertTiles = gapFor("EXPERT");
   const ultraTiles = ultraPx / TILE;
+  const bestCaseUltraTiles = bestCaseUltraPx / TILE;
 
   const spectrum: JumpSpectrum = {
     guaranteedTiles,
     normalTiles,
     expertTiles,
     ultraTiles,
-    impossibleTiles: Math.floor(ultraTiles) + 1,
+    bestCaseUltraTiles,
+    impossibleTiles: Math.floor(bestCaseUltraTiles) + 1,
     latitudeMs: {
       GUARANTEED: worstLatitudeMs(sols, guaranteedTiles * TILE),
       NORMAL: worstLatitudeMs(sols, normalTiles * TILE),
