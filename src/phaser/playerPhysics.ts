@@ -68,6 +68,57 @@ export const GRAVITY_PX = PLAYER_PHYSICS.GRAVITY * TILE; // 1500
 export const TERMINAL_VELOCITY_PX = PLAYER_PHYSICS.TERMINAL_VELOCITY * TILE; // 800
 export const JUMP_CUT_MIN_SPEED_PX = PLAYER_PHYSICS.JUMP_CUT_MIN_SPEED * TILE; // 50
 
+export function calculateMaxGap(
+  runwayTiles: number,
+  deltaYTiles: number,
+): number {
+  const deltaYPx = deltaYTiles * TILE;
+
+  // 1. Calculate takeoff horizontal speed based on runway length
+  const v0x = Math.min(
+    Math.sqrt(2 * GROUND_ACCEL_PX * runwayTiles * TILE),
+    MAX_RUN_SPEED_PX,
+  );
+
+  const v0y = JUMP_VELOCITY_PX; // Negative number (upward impulse)
+  const g = GRAVITY_PX;
+
+  // 2. Discriminant of the vertical quadratic equation
+  const discriminant = v0y * v0y + 2 * g * deltaYPx;
+
+  // If discriminant < 0, target platform is HIGHER than the max jump apex
+  if (discriminant < 0) {
+    return 0; // Impossible jump
+  }
+
+  // 3. Exact airtime (in seconds) to reach deltaY
+  const totalAirtime = (-v0y + Math.sqrt(discriminant)) / g;
+
+  // 4. Integrate horizontal flight distance over totalAirtime
+  // Time spent accelerating in the air before hitting MAX_RUN_SPEED
+  const timeToMaxSpeed = (MAX_RUN_SPEED_PX - v0x) / AIR_ACCEL_PX;
+  let maxDistancePx = 0;
+
+  if (timeToMaxSpeed >= totalAirtime) {
+    // Player never hits top speed during this jump
+    maxDistancePx =
+      v0x * totalAirtime + 0.5 * AIR_ACCEL_PX * totalAirtime * totalAirtime;
+  } else {
+    // Player hits top speed mid-air and coasts the rest of the time
+    const distAccelerating =
+      v0x * timeToMaxSpeed +
+      0.5 * AIR_ACCEL_PX * timeToMaxSpeed * timeToMaxSpeed;
+    const distCoasting = MAX_RUN_SPEED_PX * (totalAirtime - timeToMaxSpeed);
+    maxDistancePx = distAccelerating + distCoasting;
+  }
+
+  // 5. Convert to tiles and apply safety margin
+  const safetyMarginTiles = 0.4;
+  const maxGapTiles = maxDistancePx / TILE - safetyMarginTiles;
+
+  return Math.max(0, maxGapTiles);
+}
+
 /**
  * Upward impulse applied on jump, derived from the designed apex height:
  * v₀ = -√(2·g·h) ≈ -550 px/s. Negative because Phaser's Y axis points down.

@@ -21,6 +21,7 @@ import { GetPlacedTiles } from "./languageModel/tools/getPlacedTiles.ts";
 import { RelativeRegeneration } from "./languageModel/tools/relativeGeneration.ts";
 import { VerifyComplete } from "./languageModel/tools/verifyComplete.ts";
 import { CheckTraversal } from "./languageModel/tools/checkTraversal.ts";
+import { CalculateJumpGaps } from "./languageModel/tools/calculateJumpGaps.ts";
 // import { GenerateEnemy } from "./languageModel/tools/generateEnemy.ts";
 // import { ModifyEnemy } from "./languageModel/tools/modifyEnemy.ts";
 
@@ -36,6 +37,7 @@ const tools = {
   relativeGeneration: new RelativeRegeneration(getScene),
   verifyComplete: new VerifyComplete(getScene),
   checkTraversal: new CheckTraversal(getScene),
+  CalculateJumpGaps: new CalculateJumpGaps(getScene),
   // generateEnemy: new GenerateEnemy(getScene),
   // modifyEnemy: new ModifyEnemy(getScene)
 };
