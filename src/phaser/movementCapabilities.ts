@@ -130,6 +130,34 @@ export function maxGapForRunway(runwayTiles: number, tier: JumpTier): number {
   return best;
 }
 
+/**
+ * Largest whole-tile gap crossable at `tier` when the target also sits
+ * `riseTiles` higher than the takeoff.
+ *
+ * The reachability graph used to approximate this as "subtract 2 tiles of
+ * gap per tile of rise", which is wildly pessimistic: at 3 tiles of run-up
+ * the solver clears a 6-tile gap while rising 6, and the heuristic allowed
+ * zero. That mismatch is not academic — it makes the traversal checker
+ * reject placements that `findFurthestPlacement` just recommended.
+ *
+ * Backed by the same memoised `solveJump` as everything else, so repeated
+ * graph edges with the same (runway, rise) cost nothing after the first.
+ */
+export function maxGapForRunwayAtRise(
+  runwayTiles: number,
+  riseTiles: number,
+  tier: JumpTier,
+): number {
+  // Solves the EXACT runway rather than rounding down to a ladder rung.
+  // `gapLadder` samples {0,1,2,4,7} for the prompt's benefit, so a runway of
+  // 3 would inherit rung 2's answer — one tile short of the truth, and one
+  // tile short of what findFurthestPlacement (which solves exactly) will
+  // recommend. Same class of disagreement, quieter.
+  return Math.floor(
+    gapForTier(solveJump({ runwayTiles, deltaYTiles: riseTiles }), tier),
+  );
+}
+
 /** Minimum run-up needed for a gap at `tier`, or null if out of reach. */
 export function runwayNeededForGap(
   gapTiles: number,

@@ -23,7 +23,7 @@
 import type { JumpTier } from "../phaser/jumpSolver";
 import {
   currentTier,
-  maxGapForRunway,
+  maxGapForRunwayAtRise,
   movementFacts,
   RUNWAY_RUNGS,
 } from "../phaser/movementCapabilities";
@@ -123,7 +123,9 @@ function neighbors(
 
     // Jumps: targets across gaps and/or up ledges, limited by the ladder.
     const runway = runwayAt(g, x, y, dir);
-    const allowedGap = maxGapForRunway(runway, tier);
+    // Exact solve for this runway, not the nearest ladder rung — see
+    // maxGapForRunwayAtRise.
+    const allowedGap = maxGapForRunwayAtRise(runway, 0, tier);
     const maxDx = allowedGap + 1; // gap of N tiles = landing N+1 cells away
     for (let dx = 2; dx <= maxDx; dx++) {
       const tx = x + dir * dx;
@@ -131,8 +133,12 @@ function neighbors(
         const ty = y - rise;
         if (!isStandable(g, tx, ty)) continue;
         const gapWidth = dx - 1;
+        // Rising jumps used to pay a flat "2 tiles of gap per tile of rise"
+        // penalty. That was far harsher than the physics, and it disagreed
+        // with what findFurthestPlacement recommends — so the checker would
+        // reject platforms the tool had just proposed. Ask the solver.
         const allowed =
-          rise <= 0 ? allowedGap : Math.max(0, allowedGap - 2 * rise);
+          rise <= 0 ? allowedGap : maxGapForRunwayAtRise(runway, rise, tier);
         if (gapWidth > allowed) continue;
         if (rise > 0 && !headroomAt(g, x, y, rise + 1)) continue;
         out.push({ x: tx, y: ty });

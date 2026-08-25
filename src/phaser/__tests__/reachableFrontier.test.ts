@@ -4,6 +4,7 @@ import {
   furthestReachable,
   highestReachable,
   maxGapForRunway,
+  maxGapForRunwayAtRise,
   movementFacts,
   reachableFrontier,
 } from "../movementCapabilities";
@@ -84,5 +85,47 @@ describe("reachable frontier", () => {
     const easy = furthestReachable(4, "GUARANTEED")!;
     const hard = furthestReachable(4, "ULTRA")!;
     expect(easy.gapTiles).toBeLessThanOrEqual(hard.gapTiles);
+  });
+});
+
+/**
+ * The whole point of one engine is that the tool proposing a placement and
+ * the checker validating it cannot disagree.
+ *
+ * They did. The reachability graph approximated rising jumps as "subtract 2
+ * tiles of gap per tile of rise", so at 3 tiles of run-up it allowed a
+ * 0-tile gap while rising 6 — against the solver's 6. Pewter would have
+ * placed exactly what findFurthestPlacement recommended and had
+ * verifyComplete reject it on the next round.
+ */
+describe("the frontier tool and the reachability graph agree", () => {
+  it("on every rise, for every runway, at every tier", () => {
+    for (const tier of ["GUARANTEED", "NORMAL", "EXPERT", "ULTRA"] as const) {
+      for (const runway of [0, 2, 3, 7]) {
+        for (const t of reachableFrontier(runway, tier)) {
+          if (t.deltaYTiles < 0) continue; // drops use the flat bound
+          expect(
+            maxGapForRunwayAtRise(runway, t.deltaYTiles, tier),
+            `tier=${tier} runway=${runway} rise=${t.deltaYTiles}`,
+          ).toBe(t.gapTiles);
+        }
+      }
+    }
+  });
+
+  it("matches the ladder on its own rungs, and is never below it between them", () => {
+    // The ladder samples {0,1,2,4,7} for the prompt's benefit. On those
+    // runways it must agree exactly; on runways in between it may be
+    // strictly better, never worse — the ladder rounds down.
+    for (const runway of [0, 1, 2, 4, 7]) {
+      expect(maxGapForRunwayAtRise(runway, 0, "NORMAL")).toBe(
+        maxGapForRunway(runway, "NORMAL"),
+      );
+    }
+    for (const runway of [3, 5, 6]) {
+      expect(maxGapForRunwayAtRise(runway, 0, "NORMAL")).toBeGreaterThanOrEqual(
+        maxGapForRunway(runway, "NORMAL"),
+      );
+    }
   });
 });
