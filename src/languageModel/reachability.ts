@@ -1,12 +1,17 @@
 /**
- * Deterministic level-reachability checker built on MOVEMENT_CAPABILITIES.
+ * Deterministic level-reachability checker built on the frame-accurate
+ * jump solver.
  *
  * Models the level as a graph of "standable" cells (empty cell with solid
  * ground directly beneath) connected by walk, fall, and jump edges whose
- * limits come from the derived capability ladder — including how much
- * runway the takeoff platform actually provides. Conservative by
- * construction: it uses the guaranteed (safety-margin) numbers, so a pass
- * means genuinely beatable by a competent player.
+ * limits come from the solved capability ladder — including how much
+ * runway the takeoff platform actually provides.
+ *
+ * What a PASS means depends on the tier: at GUARANTEED it means any
+ * competent player finishes the level, at EXPERT it means a skilled player
+ * with tight timing can. That is a weaker guarantee than this checker used
+ * to make, and it is only safe because the tier is now explicit — EASY
+ * levels still get the old promise.
  *
  * Pure and Phaser-free so it can be unit-tested on toy grids.
  *
@@ -15,10 +20,13 @@
  * - Falls are straight down one column; no mid-fall steering.
  * - Rising jumps pay a 2-tiles-of-gap-per-tile-of-rise penalty.
  */
+import type { JumpTier } from "../phaser/jumpSolver";
 import {
+  currentTier,
   maxGapForRunway,
-  MOVEMENT_CAPABILITIES as CAPS,
-} from "../phaser/playerPhysics";
+  movementFacts,
+  RUNWAY_RUNGS,
+} from "../phaser/movementCapabilities";
 
 export interface TileGridView {
   width: number;
@@ -43,7 +51,7 @@ export interface ReachabilityResult {
 
 const key = (x: number, y: number) => `${x},${y}`;
 /** Runway is capped: beyond the last ladder rung more run-up adds nothing. */
-const MAX_RUNWAY = CAPS.gapForRunway[CAPS.gapForRunway.length - 1].runwayTiles;
+const MAX_RUNWAY = RUNWAY_RUNGS[RUNWAY_RUNGS.length - 1];
 
 export function isStandable(g: TileGridView, x: number, y: number): boolean {
   return (
@@ -79,7 +87,13 @@ function headroomAt(
   return true;
 }
 
-function neighbors(g: TileGridView, x: number, y: number): Cell[] {
+function neighbors(
+  g: TileGridView,
+  x: number,
+  y: number,
+  tier: JumpTier,
+): Cell[] {
+  const CAPS = movementFacts(tier);
   const out: Cell[] = [];
 
   for (const dir of [1, -1] as const) {
@@ -109,7 +123,7 @@ function neighbors(g: TileGridView, x: number, y: number): Cell[] {
 
     // Jumps: targets across gaps and/or up ledges, limited by the ladder.
     const runway = runwayAt(g, x, y, dir);
-    const allowedGap = maxGapForRunway(runway);
+    const allowedGap = maxGapForRunway(runway, tier);
     const maxDx = allowedGap + 1; // gap of N tiles = landing N+1 cells away
     for (let dx = 2; dx <= maxDx; dx++) {
       const tx = x + dir * dx;
@@ -157,6 +171,7 @@ export function snapToStandable(
 export function computeReachability(
   g: TileGridView,
   start: Cell,
+  tier: JumpTier = currentTier(),
 ): ReachabilityResult {
   const reachable = new Set<string>();
   const startCell = snapToStandable(g, start.x, start.y);
@@ -181,7 +196,7 @@ export function computeReachability(
   reachable.add(key(startCell.x, startCell.y));
   while (queue.length > 0) {
     const cell = queue.pop()!;
-    for (const n of neighbors(g, cell.x, cell.y)) {
+    for (const n of neighbors(g, cell.x, cell.y, tier)) {
       const k = key(n.x, n.y);
       if (!reachable.has(k)) {
         reachable.add(k);
@@ -193,7 +208,7 @@ export function computeReachability(
   // Group unreachable standable cells into walk-connected islands and
   // diagnose each one relative to the nearest reachable cell.
   const unreachable = allStandable.filter((c) => !reachable.has(key(c.x, c.y)));
-  const diagnoses = diagnoseIslands(unreachable, allStandable, reachable);
+  const diagnoses = diagnoseIslands(unreachable, allStandable, reachable, tier);
 
   return { reachable, standableCount: allStandable.length, diagnoses };
 }
@@ -202,7 +217,9 @@ function diagnoseIslands(
   unreachable: Cell[],
   allStandable: Cell[],
   reachable: Set<string>,
+  tier: JumpTier,
 ): string[] {
+  const CAPS = movementFacts(tier);
   if (unreachable.length === 0) return [];
   const unvisited = new Set(unreachable.map((c) => key(c.x, c.y)));
   const reachableCells = allStandable.filter((c) =>
@@ -295,8 +312,9 @@ export function isCollectableReachable(
   g: TileGridView,
   x: number,
   y: number,
+  tier: JumpTier = currentTier(),
 ): boolean {
-  const maxRise = Math.floor(CAPS.maxJumpApexTiles);
+  const maxRise = Math.floor(movementFacts(tier).maxJumpApexTiles);
   for (let dx = -1; dx <= 1; dx++) {
     for (let k = 0; k <= maxRise; k++) {
       const cy = y + k;

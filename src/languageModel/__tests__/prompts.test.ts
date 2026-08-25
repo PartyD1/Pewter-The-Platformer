@@ -1,9 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { MOVEMENT_CAPABILITIES as CAPS } from "../../phaser/playerPhysics";
+import { currentFacts } from "../../phaser/movementCapabilities";
 import { buildMovementPromptSection } from "../movementPrompt";
 import { buildDesignPolicySection, DESIGN_POLICY } from "../designPolicy";
 
 describe("movement prompt section", () => {
+  const CAPS = currentFacts();
   const text = buildMovementPromptSection();
 
   it("contains every derived capability number (no hardcoding drift)", () => {
@@ -16,7 +17,7 @@ describe("movement prompt section", () => {
     );
     expect(text).toContain(`ledges up to ${CAPS.maxStepUpTiles} tiles`);
     expect(text).toContain(
-      `${CAPS.expertStepUpTiles} tiles is the absolute maximum`,
+      `${CAPS.expertStepUpTiles} tiles is the absolute physical maximum`,
     );
     expect(text).toContain(`walls ${CAPS.impossibleWallTiles} tiles or taller`);
     expect(text).toContain(`${CAPS.stopDistanceTiles} tiles to stop`);

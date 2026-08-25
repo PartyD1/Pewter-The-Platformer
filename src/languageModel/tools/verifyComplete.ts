@@ -1,6 +1,10 @@
 import { tool } from "@langchain/core/tools";
 import { z } from "zod";
 import type { EditorScene } from "../../phaser/editorScene.ts";
+import {
+  LEVEL_DIFFICULTIES,
+  setLevelDifficulty,
+} from "../../phaser/movementCapabilities.ts";
 import { runCompletabilityCheck } from "../sceneReachability.ts";
 
 export class VerifyComplete {
@@ -16,14 +20,21 @@ export class VerifyComplete {
       .describe(
         "Your friendly, conversational reply to the player. This is the final message the player will see — keep it short and avoid dumping raw coordinates or tile IDs.",
       ),
+    difficulty: z
+      .enum(LEVEL_DIFFICULTIES)
+      .optional()
+      .describe(
+        "The difficulty this level was built to. Defaults to the level's current setting. The level is verified beatable at this difficulty's jump tier.",
+      ),
   });
 
   toolCall = tool(
-    async (_args: z.infer<typeof VerifyComplete.argsSchema>) => {
+    async (args: z.infer<typeof VerifyComplete.argsSchema>) => {
       // No longer a rubber stamp: run the real physics-based reachability
       // check. If it fails, the AI gets specific diagnoses to fix in its
       // remaining tool rounds.
       try {
+        if (args.difficulty) setLevelDifficulty(args.difficulty);
         const report = runCompletabilityCheck(this.sceneGetter());
         return (report.ok ? "✅ " : "❌ ") + report.text;
       } catch (e) {

@@ -5,7 +5,7 @@
  * built around 4–6-tile jumps, not trivial 1-block hops — unless the player
  * explicitly asks for something easier.
  */
-import { MOVEMENT_CAPABILITIES as CAPS } from "../phaser/playerPhysics";
+import { currentFacts } from "../phaser/movementCapabilities";
 
 export const DESIGN_POLICY = {
   /** Bread-and-butter mandatory jump gaps (tiles). */
@@ -17,6 +17,7 @@ export const DESIGN_POLICY = {
 } as const;
 
 export function buildDesignPolicySection(): string {
+  const CAPS = currentFacts();
   const [gapLo, gapHi] = DESIGN_POLICY.defaultGapRangeTiles;
   const [stepLo, stepHi] = DESIGN_POLICY.defaultStepUpRangeTiles;
   return (

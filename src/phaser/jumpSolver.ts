@@ -331,22 +331,37 @@ function solveRate(dt: number, s: JumpSituation): RateSolution {
   const stopBelowY = Math.max(targetY, 0) + 200 * TILE;
 
   // Sub-pixel takeoff phase: one frame of travel at top speed covers every
-  // possible alignment with the ledge.
+  // possible alignment with the ledge. Quarter-pixel steps, because a
+  // coarser sweep quietly costs real reach — at 1px, runway=1 lost enough
+  // to drop a whole tile off the GUARANTEED rung.
   const phaseStep = 0.25;
   const phases: number[] = [];
   for (let p = 0; p < MAX_RUN_SPEED_PX * dt; p += phaseStep) phases.push(p);
   if (phases.length === 0) phases.push(0);
 
-  // Hold duration only changes the answer when something can stop the rise.
+  /**
+   * Hold duration only matters under a ceiling.
+   *
+   * Cutting a jump short can only reduce apex AND airtime, so with open sky
+   * a full hold strictly dominates for reaching anything — including targets
+   * above you. Sweeping holds for every rising target was costing 7x for
+   * results that never won.
+   */
   const FULL_HOLD = 1e9;
-  const needsHoldSweep = ceilingY !== null || s.deltaYTiles > 0;
-  const holds = needsHoldSweep
-    ? [FULL_HOLD, 1, 2, 3, 4, 6, 8, 12, 20]
-    : [FULL_HOLD];
+  const holds =
+    ceilingY !== null ? [FULL_HOLD, 1, 2, 3, 5, 8, 14] : [FULL_HOLD];
 
   const coyoteFrames = Math.ceil(PLAYER_PHYSICS.COYOTE_TIME / dt) + 2;
-  // Enough run-up frames to cover the widest useful timing window.
-  const LOOKBACK_FRAMES = Math.ceil(1.6 / dt);
+  /**
+   * How far before the ledge to start trying the jump.
+   *
+   * Must cover the widest timing window we report (GUARANTEED, 150ms) with
+   * room to spare; jumping earlier than this is never optimal, since the
+   * player just lands back on the runway. Scaling this by 1/dt is why an
+   * early version took 13s per solve at 144fps — it was sweeping 230 frames
+   * of pointless run-up for every phase.
+   */
+  const LOOKBACK_FRAMES = Math.ceil(0.6 / dt);
 
   const variants: GapSpan[][][] = [];
   let maxGapPx = -Infinity;
