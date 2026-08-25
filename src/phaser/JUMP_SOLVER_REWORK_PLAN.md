@@ -65,11 +65,11 @@ the retired formula. GUARANTEED/NORMAL/EXPERT/ULTRA are worst-case across
 
 | runway | legacy | GUARANTEED | NORMAL | EXPERT | ULTRA | best case | gain vs legacy |
 | -----: | -----: | ---------: | -----: | -----: | ----: | --------: | -------------: |
-|      0 |   4.98 |       7.73 |   9.13 |   9.55 |  9.55 |     10.05 |      **+4.57** |
-|      1 |   8.99 |       9.02 |  10.51 |  10.84 | 10.84 |     11.49 |      **+1.85** |
-|      2 |  10.09 |       9.74 |  11.24 |  11.56 | 11.56 |     12.27 |      **+1.48** |
-|      4 |  11.05 |      10.52 |  12.02 |  12.34 | 12.34 |     12.95 |      **+1.29** |
-|      7 |  11.33 |      10.75 |  12.19 |  12.57 | 12.57 |     13.11 |      **+1.24** |
+|      0 |   4.98 |       7.64 |   8.95 |   9.39 |  9.77 |      9.87 |      **+4.79** |
+|      1 |   8.99 |       9.10 |  10.41 |  10.85 | 11.16 |     11.24 |      **+2.17** |
+|      2 |  10.09 |       9.88 |  11.20 |  11.63 | 11.88 |     12.05 |      **+1.80** |
+|      4 |  11.05 |      10.60 |  11.91 |  12.35 | 12.66 |     12.74 |      **+1.61** |
+|      7 |  11.33 |      10.57 |  11.94 |  12.38 | 12.76 |     12.89 |      **+1.42** |
 
 The old formula was leaving **1.2–4.6 tiles** on the table — worst on the
 standing jump, where it reported 4.98 tiles against a real 9.55 (+92%).
@@ -88,11 +88,11 @@ runway=4:
 | gap (tiles) | timing slack | tier       |
 | ----------: | -----------: | ---------- |
 |           5 |        500ms | GUARANTEED |
-|           8 |        300ms | GUARANTEED |
-|          10 |        167ms | GUARANTEED |
+|           8 |        313ms | GUARANTEED |
+|          10 |        194ms | GUARANTEED |
 |          11 |        132ms | NORMAL     |
-|          12 |         67ms | NORMAL     |
-|        12.5 |          0ms | impossible |
+|          12 |         63ms | EXPERT     |
+|        12.5 |         28ms | ULTRA      |
 
 Measured in **milliseconds, not frames**, so a tier means the same thing at
 30fps and 144fps — human timing precision is wall-clock, not frame-indexed.
@@ -101,23 +101,63 @@ Measured in **milliseconds, not frames**, so a tier means the same thing at
 
 | tier       | runway→gap              | step-up | impossible gap | impossible wall |
 | ---------- | ----------------------- | ------: | -------------: | --------------: |
-| GUARANTEED | 0→7 1→9 2→9 4→10 7→10   |       5 |             14 |               7 |
-| NORMAL     | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
-| EXPERT     | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
-| ULTRA      | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
+| GUARANTEED | 0→7 1→9 2→9 4→10 7→10   |       5 |             13 |               7 |
+| NORMAL     | 0→8 1→10 2→11 4→11 7→11 |       6 |             13 |               7 |
+| EXPERT     | 0→9 1→10 2→11 4→12 7→12 |       6 |             13 |               7 |
+| ULTRA      | 0→9 1→11 2→11 4→12 7→12 |       6 |             13 |               7 |
 
-**Tile quantisation collapses the top three tiers.** NORMAL, EXPERT and ULTRA
-floor to the same whole-tile ladder for same-height gaps: at runway=4 the
-values are 12.02 / 12.34 / 12.34, all of which floor to 12. On a tile grid
-there is simply no such thing as an EXPERT-only flat gap at most runways.
+**Tile quantisation blurs the top tiers, but does not erase them.** Whole-tile
+flooring costs about a tile of resolution, so EXPERT and ULTRA share a rung at
+most runways (at runway=4: 12.35 vs 12.66, both floor to 12). GUARANTEED,
+NORMAL and EXPERT do separate cleanly — 10 / 11 / 12 at runway=4.
 
-This does not break the difficulty dial, but it does relocate where difficulty
-comes from. A _level_ is graded by `classifyJump` on its actual geometry —
-the (runway, gap, deltaY) triple — which discriminates fine. The levers that
-actually produce a hard level are **starving the runway** (a 9-tile gap is
-GUARANTEED off 7 tiles of run-up and impossible off 0), **climbing**
-(step-up 5 vs 6 does separate the tiers), and **chaining** near-limit jumps.
-Widening a flat gap alone saturates almost immediately.
+> An earlier revision of this document claimed the top _three_ tiers collapsed
+> into one identical ladder. That was mostly an artifact of the bisection bug
+> in §3.1, which was pinning several tiers to the same wrong value. Once the
+> tier bounds were computed correctly, NORMAL separated from EXPERT.
+
+Difficulty still comes from more than gap width. A _level_ is graded by
+`classifyJump` on its actual geometry — the (runway, gap, deltaY) triple. The
+strongest levers are **starving the runway** (an 11-tile gap is EXPERT off 4
+tiles of run-up and impossible off 0), **climbing** (step-up 5 vs 6 separates
+GUARANTEED from the rest), and **chaining** near-limit jumps.
+
+---
+
+## 3.1 Two bugs found afterwards, while building the frontier
+
+Both were latent in the original solver and only surfaced when
+`reachableFrontier` started asking it about _rising_ targets and _deep drops_
+— the cases the flat-ground ladder never exercised. The numbers in §2 are
+post-fix.
+
+**Bisection over a non-monotonic function.** `largestGapWithLatitude` found
+each tier's bound by bisecting, which silently assumes narrow gaps are always
+easier than wide ones. For a target _above_ the takeoff that is false: its
+leading face is a wall, so gaps narrower than your reach at that height fail
+outright. The landable set is a band, not a prefix, and the bisection's
+"gap ≈ 0 must work" anchor bailed immediately — a 1-tile rise reported a
+NORMAL gap of **0** against an ULTRA gap of 12.08. A 4-tile drop reported
+4.73 against 14.42. Replaced with a linear scan, which assumes nothing about
+the shape of the function.
+
+**Physics was being stepped at the render rate.** Arcade is a fixed-step
+simulation — `Phaser.Physics.Arcade.World` defaults to `fps: 60` with
+`fixedStep: true` — so gravity, integration and tile collision always advance
+in 1/60 slices no matter the display refresh. A 30Hz monitor runs two 1/60
+steps per rendered frame; it does not integrate at 1/30. Only the
+_controller_ varies with frame rate, because `PlayerController.update()` is
+called once per rendered frame with the render delta.
+
+The solver stepped both at the same dt. At "30fps" that made the body descend
+~23px per step during a deep fall, exceeding `TILE_BIAS` (16px), so the solver
+believed the player tunnelled straight through the target platform. The
+symptom was a 4-tile drop having exactly **one** landable jump frame at 30fps
+while 60 and 144 were entirely healthy. `simulate()` now runs the controller
+at the render rate and accumulates fixed 1/60 physics steps, recording one
+sample per physics step. Per-rate maxima now agree to within ~0.15 tiles,
+which is what fixed-step physics predicts and is itself a good regression
+signal.
 
 ---
 

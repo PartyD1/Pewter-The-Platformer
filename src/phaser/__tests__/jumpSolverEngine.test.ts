@@ -178,6 +178,13 @@ function runEngine(
   const targetTop = -deltaYTiles * TILE;
   const targetLeft = gapTiles * TILE;
 
+  // Arcade is fixed-step (World defaults: fps 60, fixedStep true), so the
+  // controller runs at the render rate while physics always advances in
+  // 1/60 slices. Modelling both at `dt` is what made the solver hallucinate
+  // tunnelling on deep drops at 30fps.
+  const PHYSICS_DT = 1 / 60;
+  let accumulator = 0;
+
   for (let f = 0; f < 1400; f++) {
     const held = f >= jumpFrame && f < jumpFrame + holdFrames;
     const jjp = held && !prevJump;
@@ -194,42 +201,50 @@ function runEngine(
     body.velocity.x = r.velocityX;
     body.velocity.y = r.velocityY;
 
-    // Arcade world step.
-    body.velocity.y = Math.min(
-      body.velocity.y + GRAVITY_PX * dt,
-      TERMINAL_VELOCITY_PX,
-    );
-    body.prev = { x: body.position.x, y: body.position.y };
-    body.position.x += body.velocity.x * dt;
-    body.position.y += body.velocity.y * dt;
+    accumulator += dt;
+    while (accumulator >= PHYSICS_DT - 1e-9) {
+      accumulator -= PHYSICS_DT;
 
-    // Collision pass, exactly as the real engine resolves it.
-    body.blocked = {
-      none: true,
-      up: false,
-      down: false,
-      left: false,
-      right: false,
-    };
-    for (let i = 0; i < tiles.length; i++) {
-      const rect = tileRect(tiles[i]);
-      const intersects = !(
-        body.right <= rect.left ||
-        body.bottom <= rect.top ||
-        body.position.x >= rect.right ||
-        body.position.y >= rect.bottom
+      body.velocity.y = Math.min(
+        body.velocity.y + GRAVITY_PX * PHYSICS_DT,
+        TERMINAL_VELOCITY_PX,
       );
-      if (!intersects) continue;
-      SeparateTile(i, body, tiles[i], rect, null, TILE_BIAS, true);
-    }
+      body.prev = { x: body.position.x, y: body.position.y };
+      body.position.x += body.velocity.x * PHYSICS_DT;
+      body.position.y += body.velocity.y * PHYSICS_DT;
 
-    onGround = body.blocked.down;
+      // Collision pass, exactly as the real engine resolves it.
+      body.blocked = {
+        none: true,
+        up: false,
+        down: false,
+        left: false,
+        right: false,
+      };
+      for (let i = 0; i < tiles.length; i++) {
+        const rect = tileRect(tiles[i]);
+        const intersects = !(
+          body.right <= rect.left ||
+          body.bottom <= rect.top ||
+          body.position.x >= rect.right ||
+          body.position.y >= rect.bottom
+        );
+        if (!intersects) continue;
+        SeparateTile(i, body, tiles[i], rect, null, TILE_BIAS, true);
+      }
 
-    if (onGround && body.bottom <= targetTop + 0.5 && body.right > targetLeft) {
-      return { landed: true, landedOnTarget: true };
-    }
-    if (body.position.y > targetTop + 300 * TILE) {
-      return { landed: false, landedOnTarget: false };
+      onGround = body.blocked.down;
+
+      if (
+        onGround &&
+        body.bottom <= targetTop + 0.5 &&
+        body.right > targetLeft
+      ) {
+        return { landed: true, landedOnTarget: true };
+      }
+      if (body.position.y > targetTop + 300 * TILE) {
+        return { landed: false, landedOnTarget: false };
+      }
     }
   }
   return { landed: onGround, landedOnTarget: false };
