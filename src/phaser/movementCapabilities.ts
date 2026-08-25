@@ -19,6 +19,7 @@ import {
   gapForTier,
   HUMAN_HARD_TIER,
   type JumpTier,
+  latitudeForGap,
   solveJump,
   tierForGap,
 } from "./jumpSolver";
@@ -244,6 +245,79 @@ export function movementFactsFor(d: LevelDifficulty): MovementFacts {
 /** Movement facts for the level currently being edited. */
 export function currentFacts(): MovementFacts {
   return movementFacts(currentTier());
+}
+
+/** One landable position relative to the takeoff ledge. */
+export interface ReachableTarget {
+  /** Elevation change: + = target higher than takeoff. */
+  deltaYTiles: number;
+  /** Widest whole-tile gap landable at this elevation, at this tier. */
+  gapTiles: number;
+  /** Timing slack the player gets on that exact placement. */
+  timingSlackMs: number;
+}
+
+/** How far below the takeoff ledge the frontier bothers to look. */
+const FRONTIER_MIN_RISE = -8;
+
+const frontierCache = new Map<string, ReachableTarget[]>();
+
+/**
+ * Every elevation the player can land at from `runwayTiles` of run-up, with
+ * the widest gap available at each.
+ *
+ * This exists because the rest of the API can only *verify* a jump you have
+ * already chosen. "Put a platform as high and as far as possible" is an
+ * optimisation over two dimensions, and answering it by guess-and-check
+ * burns the agent's whole round budget. The frontier answers it in one call.
+ *
+ * Rising and reaching trade off against each other, so there is no single
+ * "furthest" point — the caller picks off the returned curve. Ordered
+ * highest-first, which is the order a level designer thinks in.
+ */
+export function reachableFrontier(
+  runwayTiles: number,
+  tier: JumpTier,
+): ReachableTarget[] {
+  const key = `${runwayTiles}|${tier}`;
+  const hit = frontierCache.get(key);
+  if (hit) return hit;
+
+  const out: ReachableTarget[] = [];
+  for (let rise = MAX_PROBE_RISE; rise >= FRONTIER_MIN_RISE; rise--) {
+    const situation = { runwayTiles, deltaYTiles: rise };
+    const gapTiles = Math.floor(gapForTier(solveJump(situation), tier));
+    if (gapTiles < 1) continue;
+    out.push({
+      deltaYTiles: rise,
+      gapTiles,
+      // Slack for the whole-tile placement actually being proposed, not for
+      // the fractional bound it was floored from.
+      timingSlackMs: Math.round(latitudeForGap(situation, gapTiles)),
+    });
+  }
+  frontierCache.set(key, out);
+  return out;
+}
+
+/** The highest a player can get from this runway (ties broken by reach). */
+export function highestReachable(
+  runwayTiles: number,
+  tier: JumpTier,
+): ReachableTarget | null {
+  return reachableFrontier(runwayTiles, tier)[0] ?? null;
+}
+
+/** The furthest a player can reach from this runway, at any elevation. */
+export function furthestReachable(
+  runwayTiles: number,
+  tier: JumpTier,
+): ReachableTarget | null {
+  let best: ReachableTarget | null = null;
+  for (const t of reachableFrontier(runwayTiles, tier)) {
+    if (!best || t.gapTiles > best.gapTiles) best = t;
+  }
+  return best;
 }
 
 /**
