@@ -366,6 +366,17 @@ interface RateSolution {
    * along the inner axis is the jump-timing window.
    */
   variants: GapSpan[][][];
+  /**
+   * The concrete input parameters behind each variants row, so a landing
+   * span found in the table can be replayed as an actual input sequence
+   * (jumpFrame = firstJf + the span's inner index).
+   */
+  variantInputs: {
+    phasePx: number;
+    holdFrames: number;
+    firstJf: number;
+    ledgeFrame: number;
+  }[];
   dt: number;
   /** Input that achieves `maxGapPx`. */
   best: OptimalInput | null;
@@ -411,6 +422,7 @@ function solveRate(dt: number, s: JumpSituation): RateSolution {
   const LOOKBACK_FRAMES = Math.ceil(0.6 / dt);
 
   const variants: GapSpan[][][] = [];
+  const variantInputs: RateSolution["variantInputs"] = [];
   let maxGapPx = -Infinity;
   let best: OptimalInput | null = null;
 
@@ -455,12 +467,19 @@ function solveRate(dt: number, s: JumpSituation): RateSolution {
         }
       }
       variants.push(row);
+      variantInputs.push({
+        phasePx: phase,
+        holdFrames: hold,
+        firstJf,
+        ledgeFrame,
+      });
     }
   }
 
   return {
     maxGapPx: maxGapPx === -Infinity ? 0 : maxGapPx,
     variants,
+    variantInputs,
     dt,
     best,
   };
@@ -472,6 +491,42 @@ export function findOptimalInput(
   dt: number,
 ): OptimalInput | null {
   return solveRate(dt, s).best;
+}
+
+/**
+ * An input sequence that lands a SPECIFIC gap at a given frame rate, or
+ * null if no input clears it.
+ *
+ * `findOptimalInput` answers "what clears the most?", which is the wrong
+ * replay for a floored whole-tile placement: on a rising target the
+ * max-gap trajectory can smack the face of a *nearer* platform, because
+ * the landable set is a band, not a prefix. Replaying a proposed placement
+ * against the real engine needs the input that lands that exact gap.
+ */
+export function findInputForGap(
+  s: JumpSituation,
+  gapTiles: number,
+  dt: number,
+): OptimalInput | null {
+  const sol = solveRate(dt, s);
+  const gapPx = gapTiles * TILE;
+  for (let v = 0; v < sol.variants.length; v++) {
+    const row = sol.variants[v];
+    for (let j = 0; j < row.length; j++) {
+      if (spansContain(row[j], gapPx)) {
+        const inp = sol.variantInputs[v];
+        return {
+          dt,
+          phasePx: inp.phasePx,
+          jumpFrame: inp.firstJf + j,
+          ledgeFrame: inp.ledgeFrame,
+          holdFrames: inp.holdFrames,
+          gapTiles,
+        };
+      }
+    }
+  }
+  return null;
 }
 
 /** Widest gap (tiles) clearable at one specific frame rate. */

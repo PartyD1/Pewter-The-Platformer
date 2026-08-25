@@ -101,6 +101,22 @@ describe("the system prompt Pewter actually receives", () => {
     expect(prompt).toMatch(/limited by the climb itself/);
   });
 
+  it("wires the dig-first build contract into the prompt", () => {
+    // On a map with continuous ground, "the furthest jump" is mostly a pit
+    // that has not been dug yet. The tool returns the digging as clearTile
+    // calls inside 'buildIt'; the prompt must make skipping them unthinkable.
+    expect(prompt).toContain("buildIt");
+    expect(prompt).toMatch(/DIG THE GAP/);
+    expect(prompt).toContain("afterBuilding");
+  });
+
+  it("makes Pewter teach the player the max-distance technique", () => {
+    // A limit jump requires running off the edge and jumping on a coyote
+    // frame. A player who does not know that will call the level broken.
+    expect(prompt).toContain("playerTip");
+    expect(prompt).toMatch(/running OFF the edge/);
+  });
+
   it("tells the model not to estimate jump distances itself", () => {
     expect(prompt).toMatch(/[Nn]ever estimate a jump distance/);
   });

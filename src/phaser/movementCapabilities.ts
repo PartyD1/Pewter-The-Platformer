@@ -278,14 +278,15 @@ const frontierCache = new Map<string, ReachableTarget[]>();
 export function reachableFrontier(
   runwayTiles: number,
   tier: JumpTier,
+  ceilingTiles?: number,
 ): ReachableTarget[] {
-  const key = `${runwayTiles}|${tier}`;
+  const key = `${runwayTiles}|${tier}|${ceilingTiles ?? "sky"}`;
   const hit = frontierCache.get(key);
   if (hit) return hit;
 
   const out: ReachableTarget[] = [];
   for (let rise = MAX_PROBE_RISE; rise >= FRONTIER_MIN_RISE; rise--) {
-    const situation = { runwayTiles, deltaYTiles: rise };
+    const situation = { runwayTiles, deltaYTiles: rise, ceilingTiles };
     const gapTiles = Math.floor(gapForTier(solveJump(situation), tier));
     if (gapTiles < 1) continue;
     out.push({

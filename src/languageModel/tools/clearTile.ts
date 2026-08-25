@@ -3,7 +3,11 @@ import type { EditorScene } from "../../phaser/editorScene.ts";
 import { invokeTool } from "../modelConnector";
 import { z } from "zod";
 import { getProcessingBox } from "../chatBox";
-import { baseStartingLayer, allSelectionBoxes } from "../../phaser/selectionBox.ts";
+import {
+  baseStartingLayer,
+  allSelectionBoxes,
+  superDuperRealUserLayer,
+} from "../../phaser/selectionBox.ts";
 
 export class ClearTile {
   sceneGetter: () => EditorScene;
@@ -51,7 +55,8 @@ export class ClearTile {
       const { xMin, xMax, yMin, yMax, layerName } = args;
       const map = scene.map;
       const layer = map.getLayer(layerName)?.tilemapLayer;
-      const opposingLayerName = layerName === "Ground_Layer" ? "Collectables_Layer" : "Ground_Layer";
+      const opposingLayerName =
+        layerName === "Ground_Layer" ? "Collectables_Layer" : "Ground_Layer";
       const opposingLayer = map.getLayer(opposingLayerName)?.tilemapLayer;
 
       if (!layer) {
@@ -64,7 +69,8 @@ export class ClearTile {
           for (let y = yMin; y <= yMax; y++) {
             const removed = map.removeTileAt(x, y, false, false, layer);
             if (removed) clearedCount++;
-            if (opposingLayer) map.removeTileAt(x, y, false, false, opposingLayer);
+            if (opposingLayer)
+              map.removeTileAt(x, y, false, false, opposingLayer);
             const targetBox = getProcessingBox() ?? scene.activeBox;
             if (targetBox) {
               targetBox.addEmptyMarker(x, y, "Ground_Layer");
@@ -79,7 +85,9 @@ export class ClearTile {
         const toRemove = scene.enemies.filter((enemy) => {
           const tileX = Math.floor(enemy.x / tileW);
           const tileY = Math.floor(enemy.y / tileH);
-          return tileX >= xMin && tileX <= xMax && tileY >= yMin && tileY <= yMax;
+          return (
+            tileX >= xMin && tileX <= xMax && tileY >= yMin && tileY <= yMax
+          );
         });
         for (const enemy of toRemove) {
           const idx = scene.enemies.indexOf(enemy);
@@ -147,13 +155,21 @@ export class ClearTile {
         // Scan all layers for tiles remaining in the cleared area
         // Layer order: higher index = higher priority (rendered on top)
         const layerOrder: Record<string, number> = {
-          "Ground_Layer": 1,
-          "Collectables_Layer": 2,
+          Ground_Layer: 1,
+          Collectables_Layer: 2,
         };
         const clearedLayerRank = layerOrder[layerName] ?? 0;
 
         const currentBox = getProcessingBox() ?? scene.activeBox;
-        const remaining: Array<{ x: number; y: number; tileIndex: number; layer: string; source: string; canClear: boolean; reason: string }> = [];
+        const remaining: Array<{
+          x: number;
+          y: number;
+          tileIndex: number;
+          layer: string;
+          source: string;
+          canClear: boolean;
+          reason: string;
+        }> = [];
 
         for (const layerData of map.layers) {
           if (!layerData.tilemapLayer) continue;
@@ -166,16 +182,32 @@ export class ClearTile {
               const lName = layerData.name;
               let source = "unknown origin";
 
-              if (superDuperRealUserLayer.some(t => t.x === x && t.y === y && t.layerName === lName)) {
+              if (
+                superDuperRealUserLayer.some(
+                  (t) => t.x === x && t.y === y && t.layerName === lName,
+                )
+              ) {
                 source = "placed by user";
-              } else if (baseStartingLayer.some(t => t.x === x && t.y === y && t.layerName === lName)) {
+              } else if (
+                baseStartingLayer.some(
+                  (t) => t.x === x && t.y === y && t.layerName === lName,
+                )
+              ) {
                 source = "pre-existing base tile";
-              } else if (currentBox?.placedTiles?.some((t: any) => t.x === x && t.y === y && t.layerName === lName)) {
+              } else if (
+                currentBox?.placedTiles?.some(
+                  (t: any) => t.x === x && t.y === y && t.layerName === lName,
+                )
+              ) {
                 source = "placed by this agent";
               } else {
                 for (const box of allSelectionBoxes) {
                   if (box === currentBox) continue;
-                  if (box.placedTiles?.some(t => t.x === x && t.y === y && t.layerName === lName)) {
+                  if (
+                    box.placedTiles?.some(
+                      (t) => t.x === x && t.y === y && t.layerName === lName,
+                    )
+                  ) {
                     source = "placed by another agent";
                     break;
                   }
@@ -204,7 +236,15 @@ export class ClearTile {
                 reason = "can clear — lower layer tile";
               }
 
-              remaining.push({ x, y, tileIndex: tile.index, layer: lName, source, canClear, reason });
+              remaining.push({
+                x,
+                y,
+                tileIndex: tile.index,
+                layer: lName,
+                source,
+                canClear,
+                reason,
+              });
             }
           }
         }
@@ -215,8 +255,8 @@ export class ClearTile {
         }
 
         if (remaining.length > 0) {
-          const onTargetLayer = remaining.filter(t => t.layer === layerName);
-          const onOtherLayers = remaining.filter(t => t.layer !== layerName);
+          const onTargetLayer = remaining.filter((t) => t.layer === layerName);
+          const onOtherLayers = remaining.filter((t) => t.layer !== layerName);
 
           if (onTargetLayer.length > 0) {
             result += `\n⚠️ ${onTargetLayer.length} tile(s) on '${layerName}' could NOT be cleared:`;
@@ -230,7 +270,7 @@ export class ClearTile {
             for (const t of onOtherLayers) {
               result += `\n  - (${t.x}, ${t.y}) on '${t.layer}' [tile #${t.tileIndex}] — ${t.source} — ${t.reason}`;
             }
-            const clearable = onOtherLayers.filter(t => t.canClear);
+            const clearable = onOtherLayers.filter((t) => t.canClear);
             if (clearable.length > 0) {
               result += `\nYou have authority to clear ${clearable.length} of these — call clearTiles for their respective layers.`;
             }
