@@ -1,6 +1,7 @@
 import { getChatResponse } from "./modelConnector.ts";
 import { AIMessage, BaseMessage, HumanMessage } from "@langchain/core/messages";
 import { SystemMessage } from "@langchain/core/messages";
+import { buildSystemPrompt } from "./systemPrompt.ts";
 
 // Persistent history of all chat messages exchanged
 // Expose current chat history for UI rendering
@@ -95,22 +96,7 @@ export function setActiveSelectionBox(
   // we can finalize it when tools are invoked.
   // (editor listens for tool events and uses getProcessingBox() as a fallback)
   // Ensure system message is always first
-  const sysPrompt =
-    "You are 'Pewter', an expert tile-based map designer by day and an incredible video game player by night. " +
-    "Your goal is to assist the player in making a platformer game that is playable and completable. You have access to a set of tools — use them proactively as needed to fulfill the player's requests. " +
-    "IMPORTANT: You must ONLY make changes inside the selection box. You cannot modify tiles or place objects outside the selection box under any circumstances. " +
-    "The default map is 20 tiles tall. The bottom 5 rows are ground tiles (solid). The top 15 rows are empty sky. Do NOT remove the default ground tiles unless the player explicitly asks you to. " +
-    "Coordinate system: X increases to the right, Y increases downward. So higher X = further right, lower X = further left, higher Y = lower on screen, lower Y = higher on screen. " +
-    "Layers available: Collectables_Layer and Ground_Layer. " +
-    "Tile ID 2 = coin, 3 = fruit, 4 = platform block, 5 = dirt block, 6 = grass block, 7 = question mark block, 8 = ultra slime, 9 = normal slime. " +
-    "Category: Collectables = [2, 3], Ground = [4, 5, 6, 7]. " +
-    "Each tool has a description — check it. Most tasks require one or more tools; use each as many times as needed. When given specific coordinates, use them strictly. When given a general location or random placement, use your judgement. " +
-    "When the WorldFacts tool gives you information about the world, use it silently to inform your tool calls — do not summarize or report it back to the player. " +
-    "You operate in rounds: each round you may call tools, and the results are fed back to you for the next round. You have a maximum of 8 rounds before you must give a final response, so plan your tool calls efficiently. " +
-    "Execute the player's requests directly. Only ask for clarification if the player explicitly requests it, or if the instruction is genuinely ambiguous and a reasonable assumption cannot be made. When given a multi-step task, execute all steps in sequence without pausing. " +
-    "When summarizing what you did, keep it short and conversational — do not dump raw coordinates, tile IDs, or tool output data into your response. " +
-    "Be friendly. The level must be completable. " +
-    "REQUIRED: You must call the verifyComplete tool once after finishing all other tool calls. It runs a real reachability check on the level — if it reports problems, fix them with more tool calls and call it again. Pass your player-facing reply as the 'summary' argument — this is the only text the player will see. Every response must include exactly one call to this tool.";
+  const sysPrompt = buildSystemPrompt();
   const isSystemMessage = (msg: any) =>
     msg && msg._getType && msg._getType() === "system";
   if (
@@ -138,13 +124,23 @@ export function setActiveSelectionBox(
 let botResponding = false;
 
 // Tool names that only read state — snapshot should NOT be saved for these
+/**
+ * Tool names that never mutate the world, so they should not trigger a
+ * world-snapshot save.
+ *
+ * These must be the names the MODEL sees (`tool.name`), not the keys of the
+ * registry object in main.ts. "calculateJumpGaps" was listed here while the
+ * tool is actually registered as "calculateMaxGap", so every gap calculation
+ * was misfiling itself as a world edit.
+ */
 const READ_ONLY_TOOLS = new Set([
   "getPlacedTiles",
   "getWorldFacts",
   "relativeGeneration",
   "verifyComplete",
   "checkTraversal",
-  "calculateJumpGaps",
+  "calculateMaxGap",
+  "findFurthestPlacement",
 ]);
 
 /**

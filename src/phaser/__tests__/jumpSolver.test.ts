@@ -37,11 +37,14 @@ describe("spectrum ordering", () => {
     let prev = solveJump({ runwayTiles: RUNWAYS[0], deltaYTiles: 0 });
     for (const runwayTiles of RUNWAYS.slice(1)) {
       const cur = solveJump({ runwayTiles, deltaYTiles: 0 });
-      // Allow a hair of slack: the sweep is discrete, not analytic.
+      // Allow a hair of slack (0.05 tiles ≈ 0.8px): the sweep is discrete,
+      // not analytic, and the fixed-step accumulator means a given takeoff
+      // phase lands on slightly different physics-step boundaries at
+      // different runway lengths.
       expect(cur.guaranteedTiles).toBeGreaterThanOrEqual(
-        prev.guaranteedTiles - 0.02,
+        prev.guaranteedTiles - 0.05,
       );
-      expect(cur.ultraTiles).toBeGreaterThanOrEqual(prev.ultraTiles - 0.02);
+      expect(cur.ultraTiles).toBeGreaterThanOrEqual(prev.ultraTiles - 0.05);
       prev = cur;
     }
   });
@@ -163,6 +166,11 @@ function replay(
   const targetY = -deltaYTiles * TILE;
   const targetLeft = gapTiles * TILE;
 
+  // Controller at the render rate, physics at a fixed 1/60 — the same split
+  // Arcade uses (World defaults: fps 60, fixedStep true).
+  const PHYSICS_DT = 1 / 60;
+  let accumulator = 0;
+
   for (let f = 0; f < 1400; f++) {
     const held = f >= jumpFrame && f < jumpFrame + holdFrames;
     const jjp = held && !prevJump;
@@ -177,25 +185,33 @@ function replay(
     );
     vx = r.velocityX;
     vy = r.velocityY;
-    vy = Math.min(vy + GRAVITY_PX * dt, TERMINAL_VELOCITY_PX);
-    const prevBottom = bottom;
-    left += vx * dt;
-    bottom += vy * dt;
-    const supported = left < 0;
-    if (supported && bottom >= 0 && vy > 0) {
-      bottom = 0;
-      vy = 0;
-      onGround = true;
-    } else {
-      onGround = supported && bottom === 0 && vy === 0;
-    }
-    if (!supported) offPlatform = true;
 
-    if (offPlatform && bottom > targetY && left + W > targetLeft) {
-      // First frame we are both below the surface and into the target.
-      return prevBottom <= targetY && vy > 0;
+    accumulator += dt;
+    while (accumulator >= PHYSICS_DT - 1e-9) {
+      accumulator -= PHYSICS_DT;
+      vy = Math.min(vy + GRAVITY_PX * PHYSICS_DT, TERMINAL_VELOCITY_PX);
+      left += vx * PHYSICS_DT;
+      bottom += vy * PHYSICS_DT;
+      const supported = left < 0;
+      if (supported && bottom >= 0 && vy > 0) {
+        bottom = 0;
+        vy = 0;
+        onGround = true;
+      } else {
+        onGround = supported && bottom === 0 && vy === 0;
+      }
+      if (!supported) offPlatform = true;
+
+      if (offPlatform && bottom > targetY && left + W > targetLeft) {
+        // First step where we are both below the surface and into the
+        // target. Arcade seats us on top when we sank less than we
+        // overlapped; otherwise it shoves us back out.
+        const sink = bottom - targetY;
+        const overlap = left + W - targetLeft;
+        return vy > 0 && sink <= 16 && sink <= overlap;
+      }
+      if (offPlatform && bottom > targetY + 400 * TILE) return false;
     }
-    if (offPlatform && bottom > targetY + 400 * TILE) return false;
   }
   return false;
 }

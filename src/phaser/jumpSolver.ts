@@ -142,6 +142,13 @@ interface SimFrame {
   vy: number;
   /** True once the body has lost all contact with the takeoff platform. */
   offPlatform: boolean;
+  /**
+   * Index of the RENDERED frame this physics step belongs to. Several steps
+   * can share one render frame (or none at all above 60fps), so this is the
+   * only safe way to talk about jump timing, which is sampled per render
+   * frame.
+   */
+  renderFrame: number;
 }
 
 /**
@@ -162,16 +169,45 @@ interface GapSpan {
 }
 
 /**
+ * Fixed physics timestep, in seconds.
+ *
+ * Arcade is a FIXED-STEP simulation: `Phaser.Physics.Arcade.World` defaults
+ * to `fps: 60` with `fixedStep: true` (see World.js), so gravity, position
+ * integration and tile collision always advance in 1/60 slices no matter what
+ * the display is doing. A 30Hz monitor does not integrate at 1/30 — it runs
+ * two 1/60 steps per rendered frame.
+ *
+ * Only the CONTROLLER runs at the render rate: `PlayerController.update()` is
+ * called once per rendered frame with the render delta, so input sampling,
+ * the coyote/jump-buffer timers, and horizontal acceleration are what vary
+ * with frame rate.
+ *
+ * Conflating the two is not a harmless simplification. Integrating position
+ * at 1/30 makes the body descend ~23px per step during a deep fall, which
+ * exceeds `TILE_BIAS` and makes the solver believe the player tunnels
+ * straight through the target platform. That produced a phantom result where
+ * a 4-tile drop had exactly one landable jump frame at "30fps" while 60 and
+ * 144 were completely healthy.
+ */
+const PHYSICS_DT = 1 / 60;
+
+/**
  * Simulate one jump attempt.
  *
- * Mirrors the live loop exactly: `stepMovement` → gravity → integrate →
- * resolve, the same order `PlayerController` + Arcade run in. The body
- * starts with its *leading edge* `runwayPx` back from the ledge, and stays
- * supported while any part of it overlaps the platform — down to the last
- * pixel, which is what makes the run-off-the-edge exploit representable.
+ * Mirrors the live loop: `stepMovement` at the render rate, then as many
+ * fixed 1/60 Arcade steps (gravity → integrate → resolve) as that render
+ * frame's elapsed time buys. The body starts with its *leading edge*
+ * `runwayPx` back from the ledge, and stays supported while any part of it
+ * overlaps the platform — down to the last pixel, which is what makes the
+ * run-off-the-edge exploit representable.
+ *
+ * One `SimFrame` is recorded per physics step, not per rendered frame, so
+ * landing detection sees every position the body actually occupied. The
+ * jump-timing axis is unaffected: that is indexed by rendered frame, which
+ * is when input is sampled.
  */
 function simulate(
-  dt: number,
+  renderDt: number,
   runwayPx: number,
   phasePx: number,
   jumpFrame: number,
@@ -187,6 +223,7 @@ function simulate(
   let onGround = true;
   let prevJumpHeld = false;
   let everOffPlatform = false;
+  let accumulator = 0;
   const frames: SimFrame[] = [];
 
   for (let f = 0; f < MAX_FRAMES; f++) {
@@ -201,45 +238,55 @@ function simulate(
       vx,
       vy,
       onGround,
-      dt,
+      renderDt,
     );
     vx = r.velocityX;
     vy = r.velocityY;
 
-    // Arcade integrates gravity itself, after the controller runs.
-    vy = Math.min(vy + GRAVITY_PX * dt, TERMINAL_VELOCITY_PX);
-    left += vx * dt;
-    bottom += vy * dt;
+    let done = false;
+    accumulator += renderDt;
+    while (accumulator >= PHYSICS_DT - 1e-9) {
+      accumulator -= PHYSICS_DT;
 
-    // Supported while ANY horizontal overlap with the takeoff platform
-    // remains — the platform's right edge is x = 0.
-    const supported = left < 0;
-    if (supported && bottom >= 0 && vy > 0) {
-      bottom = 0;
-      vy = 0;
-      onGround = true;
-    } else {
-      onGround = supported && bottom === 0 && vy === 0;
+      vy = Math.min(vy + GRAVITY_PX * PHYSICS_DT, TERMINAL_VELOCITY_PX);
+      left += vx * PHYSICS_DT;
+      bottom += vy * PHYSICS_DT;
+
+      // Supported while ANY horizontal overlap with the takeoff platform
+      // remains — the platform's right edge is x = 0.
+      const supported = left < 0;
+      if (supported && bottom >= 0 && vy > 0) {
+        bottom = 0;
+        vy = 0;
+        onGround = true;
+      } else {
+        onGround = supported && bottom === 0 && vy === 0;
+      }
+
+      // Corridor ceiling: bonk and lose all upward speed. Spans the runway
+      // AND the gap — a ceiling that stopped at the ledge would constrain
+      // nothing, since the longest jumps are taken from past the ledge and
+      // would simply fly out from under it.
+      if (ceilingY !== null && vy < 0 && bottom - BODY_H <= ceilingY) {
+        bottom = ceilingY + BODY_H;
+        vy = 0;
+      }
+
+      if (!supported) everOffPlatform = true;
+      frames.push({
+        right: left + BODY_W,
+        bottom,
+        vy,
+        offPlatform: everOffPlatform,
+        renderFrame: f,
+      });
+
+      if (everOffPlatform && bottom > stopBelowY) {
+        done = true;
+        break;
+      }
     }
-
-    // Corridor ceiling: bonk and lose all upward speed. Spans the runway AND
-    // the gap — a ceiling that stopped at the ledge would constrain nothing,
-    // since the longest jumps are taken from past the ledge and would simply
-    // fly out from under it.
-    if (ceilingY !== null && vy < 0 && bottom - BODY_H <= ceilingY) {
-      bottom = ceilingY + BODY_H;
-      vy = 0;
-    }
-
-    if (!supported) everOffPlatform = true;
-    frames.push({
-      right: left + BODY_W,
-      bottom,
-      vy,
-      offPlatform: everOffPlatform,
-    });
-
-    if (everOffPlatform && bottom > stopBelowY) break;
+    if (done) break;
   }
   return frames;
 }
@@ -370,8 +417,11 @@ function solveRate(dt: number, s: JumpSituation): RateSolution {
   for (const phase of phases) {
     // Where does this phase actually lose contact with the ledge?
     const probe = simulate(dt, runwayPx, phase, -1, 0, ceilingY, stopBelowY);
-    let ledgeFrame = probe.findIndex((fr) => fr.offPlatform);
-    if (ledgeFrame < 0) ledgeFrame = probe.length - 1;
+    // In RENDER frames — that is the axis jump timing lives on.
+    const ledgeStep = probe.find((fr) => fr.offPlatform);
+    const ledgeFrame = ledgeStep
+      ? ledgeStep.renderFrame
+      : (probe[probe.length - 1]?.renderFrame ?? 0);
 
     const firstJf = Math.max(0, ledgeFrame - LOOKBACK_FRAMES);
     const lastJf = ledgeFrame + coyoteFrames;
@@ -429,6 +479,15 @@ export function maxGapAtRate(s: JumpSituation, dt: number): number {
   return solveRate(dt, s).maxGapPx / TILE;
 }
 
+/** Jump-timing slop (ms) at one specific frame rate. Diagnostics only. */
+export function latitudeAtRate(
+  s: JumpSituation,
+  gapTiles: number,
+  dt: number,
+): number {
+  return latitudeMsFor(solveRate(dt, s), gapTiles * TILE);
+}
+
 /** Longest contiguous run of jump frames that clears `gapPx`, in ms. */
 function latitudeMsFor(sol: RateSolution, gapPx: number): number {
   let best = 0;
@@ -449,10 +508,31 @@ function worstLatitudeMs(sols: RateSolution[], gapPx: number): number {
   return worst;
 }
 
+/** Resolution of the gap scan below. One pixel = 1/16 tile. */
+const GAP_SCAN_STEP_PX = 1;
+
 /**
  * Largest gap (px) whose worst-case latitude still meets `thresholdMs`.
- * Bisects between 0 and the known ceiling; latitude is monotonically
- * non-increasing in gap width, which is what makes bisection valid.
+ *
+ * Scans downward from the known ceiling rather than bisecting. Bisection
+ * looks tempting and is WRONG here, for two independent reasons:
+ *
+ * 1. Narrow gaps are not always easier. When the target is HIGHER than the
+ *    takeoff, its leading face is a wall — a gap narrower than the player's
+ *    reach at that height puts the wall where the body still is, and the
+ *    jump smacks into it. So the landable set is a band, not a prefix, and
+ *    a bisection anchored at "gap ≈ 0 must work" bails out and reports zero.
+ * 2. Latitude is the longest *contiguous* run of working jump frames. As the
+ *    gap widens, frames drop out of the middle of a run as readily as off
+ *    the end, so the run length can wobble rather than decay cleanly.
+ *
+ * The earlier bisection produced nonsense on exactly these cases: a 1-tile
+ * rise reported a NORMAL gap of 0 against an ULTRA gap of 12.08, and a
+ * 4-tile drop reported 4.73 against 14.42. Flat ground happened to satisfy
+ * both assumptions, which is why the level-target ladder looked right and
+ * hid the bug.
+ *
+ * A linear scan makes no assumption about the shape of the function at all.
  */
 function largestGapWithLatitude(
   sols: RateSolution[],
@@ -464,15 +544,10 @@ function largestGapWithLatitude(
       ? worstLatitudeMs(sols, g) > 0
       : worstLatitudeMs(sols, g) >= thresholdMs;
 
-  if (!meets(0.001)) return 0;
-  let lo = 0.001;
-  let hi = ceilingPx;
-  for (let i = 0; i < 40; i++) {
-    const mid = (lo + hi) / 2;
-    if (meets(mid)) lo = mid;
-    else hi = mid;
+  for (let g = ceilingPx; g > 0; g -= GAP_SCAN_STEP_PX) {
+    if (meets(g)) return g;
   }
-  return lo;
+  return 0;
 }
 
 const cache = new Map<string, JumpSpectrum>();
