@@ -1,311 +1,237 @@
 # Jump Solver Rework — finding the REAL maximum distance
 
-Status: plan, not yet implemented.
-Supersedes the closed-form `calculateMaxGap()` in `playerPhysics.ts` and the
-`gapForRunway` ladder that `reachability.ts` and `movementPrompt.ts` read.
+**Status: implemented.** All five phases shipped. This document is now the
+record of what was built and why, including the two bugs the engine
+validation caught and the one design assumption that turned out wrong.
+
+Replaces the closed-form `calculateMaxGap()` / `rawJumpDistanceTiles()` that
+used to live in `playerPhysics.ts` (both deleted).
+
+| Concern                            | Lives in                             |
+| ---------------------------------- | ------------------------------------ |
+| Physics constants, `stepMovement`  | `playerPhysics.ts`                   |
+| The frame-accurate search          | `jumpSolver.ts`                      |
+| Design-facing ladders and tiers    | `movementCapabilities.ts`            |
+| Validation against the real engine | `__tests__/jumpSolverEngine.test.ts` |
 
 ---
 
 ## 1. The problem
 
-`calculateMaxGap(runwayTiles, deltaYTiles)` is continuous-kinematics algebra.
-It assumes the player takes off from a standstill, runs exactly `runwayTiles`,
-and jumps at the instant the body reaches the tile boundary. Real Pewter
-physics is a discrete frame loop (`stepMovement` → gravity → integrate →
-resolve) with a 10×14px body, coyote time, and per-frame collision resolution.
-The formula is not a conservative approximation of that loop — it is a
-different model, and it is wrong in one direction: **it always under-reports.**
+`calculateMaxGap(runwayTiles, deltaYTiles)` was continuous-kinematics
+algebra. It assumed the player takes off from a standstill, runs exactly
+`runwayTiles`, and jumps the instant the body reaches the tile boundary. Real
+Pewter physics is a discrete frame loop (`stepMovement` → gravity → integrate
+→ resolve) with a 10×14px body, coyote time, and per-frame collision
+resolution. The formula was not a conservative approximation of that loop — it
+was a different model, and it was wrong in one direction: **it always
+under-reported.**
 
-### Four things the formula never models
+### What the formula never modelled
 
-**1. Coyote time (the big one).** `COYOTE_TIME = 0.06s` ≈ 3–4 frames at 60fps.
+**1. Coyote time — the big one.** `COYOTE_TIME = 0.06s` ≈ 3–4 frames at 60fps.
 The player can run _completely off_ the ledge, keep accelerating airborne, and
 _then_ jump. That buys horizontal distance during those frames and buys
-airtime, because the launch point is now below platform level so the fall back
-to that level is longer. The formula has no term for this at all.
+airtime, because the launch point is below platform level so the fall back to
+that level is longer. The formula had no term for it.
 
-**2. Sub-tile takeoff geometry.** The body is 10px wide, so at takeoff the
-body's _leading edge_ is already 10px past the ledge, and at landing you only
-need that leading edge to touch the target tile's leading edge. Measured
-edge-to-edge, the crossable gap is roughly `flightDistance + bodyWidth`
-(+0.625 tiles). The formula instead _subtracts_ a flat 0.4-tile margin. Net
-geometric error ≈ 1.0 tile before coyote time is even counted.
+**2. Sub-tile takeoff geometry.** The body is 10px wide, so at takeoff its
+leading edge is already 10px past the ledge, and at landing only that leading
+edge needs to reach the target.
 
-**3. Frame quantization.** Landing resolves on a frame boundary, so the true
+**3. Frame quantisation.** Landing resolves on a frame boundary, so the true
 answer depends on frame rate and on the sub-pixel phase at which the player
 arrives at the ledge. A continuous formula cannot express either.
 
-**4. Takeoff phase control.** The player can insert an idle frame during the
-run-up to shift their frame alignment at the ledge. This is a real technique
-and it moves the answer by up to one frame of travel (~4.3px at 60fps).
+**4. Takeoff phase control.** Inserting an idle frame during the run-up shifts
+frame alignment at the ledge, worth up to one frame of travel (~4.3px at
+60fps).
 
-### Split-brain: two disagreeing sources of truth
+### Split-brain
 
-`calculateJumpGaps` (the tool Pewter calls) uses `calculateMaxGap`.
-`reachability.ts` and `movementPrompt.ts` use a _different_ function,
-`rawJumpDistanceTiles` + `MOVEMENT_CAPABILITIES.gapForRunway`. Today they
-happen to agree numerically, but nothing enforces that — they are separate
-derivations of the same physics. Pewter can be told a gap is fine by one and
-have `verifyComplete` reject it via the other.
-
----
-
-## 2. Measured evidence
-
-Frame-accurate sim built on the real `stepMovement`, sweeping sub-pixel takeoff
-phase × jump frame × hold duration. Level target (deltaY = 0), gap measured
-ledge-edge to target-edge.
-
-| runway (tiles) | `calculateMaxGap` | real max @30fps | @60fps | @144fps | **worst rate** | under-report |
-| -------------: | ----------------: | --------------: | -----: | ------: | -------------: | -----------: |
-|              0 |              4.98 |            7.29 |   7.16 |    6.95 |       **6.95** |    **+1.97** |
-|              1 |              8.99 |           10.56 |  10.74 |   10.84 |      **10.56** |    **+1.57** |
-|              2 |             10.09 |           11.42 |  11.87 |   11.88 |      **11.42** |    **+1.34** |
-|              4 |             11.05 |           12.55 |  12.85 |   12.72 |      **12.55** |    **+1.50** |
-|              7 |             11.33 |           12.89 |  13.15 |   12.72 |      **12.72** |    **+1.39** |
-|             20 |             11.33 |           12.89 |  13.15 |   12.72 |      **12.72** |    **+1.39** |
-
-The tool is leaving **1.3–2.0 tiles** of real reach on the table, worst at a
-standing jump (+40%).
-
-The optimal input for runway=4 @60fps is `takeoffPhase=1.50px, jumpFrame=41,
-hold=full`. The ledge is crossed at frame ~38. **Frame 41 is the last coyote
-frame** — the maximum requires leaving the block entirely and jumping 3 frames
-later. This is precisely the "one pixel left on the block" exploit.
-
-### Jump-timing latitude is the difficulty metric
-
-For runway=4 @60fps, taking the _best_ takeoff phase and measuring the longest
-contiguous run of jump frames that clears the gap:
-
-| gap (tiles) | working jump frames | latitude | tier                      |
-| ----------: | ------------------: | -------: | ------------------------- |
-|        5.00 |              12..41 |       30 | GUARANTEED                |
-|        8.00 |              23..41 |       19 | GUARANTEED                |
-|       10.00 |              31..41 |       11 | GUARANTEED                |
-|       11.00 |              35..41 |        7 | NORMAL                    |
-|       12.00 |              38..41 |        4 | NORMAL                    |
-|       12.50 |              40..41 |        2 | EXPERT                    |
-|       12.75 |              41..41 |        1 | **ULTRA (frame-perfect)** |
-|       12.85 |              41..41 |        1 | **ULTRA (frame-perfect)** |
-|       13.00 |                none |        0 | IMPOSSIBLE                |
-
-This is the number to build difficulty on. It is monotonic, has a hard floor
-at 0 (impossible) and a natural "0.1%" boundary at 1 (frame-perfect), and it
-is directly interpretable: _how many frames of slop does the player get?_
+`calculateJumpGaps` (the tool Pewter called) used `calculateMaxGap`, while
+`reachability.ts` and `movementPrompt.ts` used a _different_ derivation
+(`rawJumpDistanceTiles` + `MOVEMENT_CAPABILITIES`). Nothing kept the two in
+sync, so Pewter could be told a gap was fine by one and have `verifyComplete`
+reject it via the other. Both are now deleted; there is one engine.
 
 ---
 
-## 3. Design
+## 2. Results
 
-### 3.1 New module: `src/phaser/jumpSolver.ts`
+Level target (deltaY = 0), gap measured ledge-edge to target-edge. "Legacy" is
+the retired formula. GUARANTEED/NORMAL/EXPERT/ULTRA are worst-case across
+30/60/144fps; "best case" is the best single frame rate.
 
-Pure, Phaser-free, no dependency on `reachability.ts`. Owns one job: given a
-jump situation, search the real input space and report what actually lands.
+| runway | legacy | GUARANTEED | NORMAL | EXPERT | ULTRA | best case | gain vs legacy |
+| -----: | -----: | ---------: | -----: | -----: | ----: | --------: | -------------: |
+|      0 |   4.98 |       7.73 |   9.13 |   9.55 |  9.55 |     10.05 |      **+4.57** |
+|      1 |   8.99 |       9.02 |  10.51 |  10.84 | 10.84 |     11.49 |      **+1.85** |
+|      2 |  10.09 |       9.74 |  11.24 |  11.56 | 11.56 |     12.27 |      **+1.48** |
+|      4 |  11.05 |      10.52 |  12.02 |  12.34 | 12.34 |     12.95 |      **+1.29** |
+|      7 |  11.33 |      10.75 |  12.19 |  12.57 | 12.57 |     13.11 |      **+1.24** |
 
-```ts
-export type JumpTier = "GUARANTEED" | "NORMAL" | "EXPERT" | "ULTRA";
+The old formula was leaving **1.2–4.6 tiles** on the table — worst on the
+standing jump, where it reported 4.98 tiles against a real 9.55 (+92%).
 
-export interface JumpSituation {
-  runwayTiles: number; // flat run-up before the ledge
-  deltaYTiles: number; // + = target higher, - = target lower
-  ceilingTiles?: number; // headroom over the runway; undefined = open sky
-  landingWallTiles?: number; // solid height at the target's leading edge
-}
+Note the GUARANTEED column sits _below_ the legacy number at runway ≥ 2. That
+is correct and intentional: legacy claimed a single number with a flat 0.4-tile
+fudge and no notion of how much timing precision it demanded. GUARANTEED is a
+real promise — 150ms of slack at every frame rate. The old number was roughly
+an EXPERT-tier jump being sold as a safe one.
 
-export interface JumpSpectrum {
-  guaranteedTiles: number; // latitude >= 10 frames
-  normalTiles: number; // latitude >= 4
-  expertTiles: number; // latitude >= 2
-  ultraTiles: number; // latitude >= 1  <- the literal maximum
-  impossibleTiles: number; // ultraTiles rounded up; nothing at/above lands
-  /** Frames of jump-timing slop at each tier, for reporting. */
-  latitude: Record<JumpTier, number>;
-}
+### Difficulty = jump-timing latitude
 
-export function solveJump(s: JumpSituation): JumpSpectrum;
-export function tierForGap(
-  s: JumpSituation,
-  gapTiles: number,
-): JumpTier | "IMPOSSIBLE";
-export function latitudeForGap(s: JumpSituation, gapTiles: number): number;
-```
+Milliseconds of slack on the jump press, worst case across frame rates, at
+runway=4:
 
-### 3.2 The simulator
+| gap (tiles) | timing slack | tier       |
+| ----------: | -----------: | ---------- |
+|           5 |        500ms | GUARANTEED |
+|           8 |        300ms | GUARANTEED |
+|          10 |        167ms | GUARANTEED |
+|          11 |        132ms | NORMAL     |
+|          12 |         67ms | NORMAL     |
+|        12.5 |          0ms | impossible |
 
-Mirrors `PlayerController` + Arcade exactly, same order as the existing test
-harness `Sim`, upgraded from a point to a real AABB:
+Measured in **milliseconds, not frames**, so a tier means the same thing at
+30fps and 144fps — human timing precision is wall-clock, not frame-indexed.
 
-1. `stepMovement(state, input, vx, vy, onGround, dt)` — verbatim, imported.
-2. `vy = min(vy + GRAVITY_PX*dt, TERMINAL_VELOCITY_PX)`
-3. `x += vx*dt; y += vy*dt`
-4. Resolve collision for a `PLAYER_BODY_PX` (10×14) AABB against the takeoff
-   platform, target platform, ceiling, and landing wall.
+### The shipped ladders
 
-Grounded test is horizontal overlap with the takeoff platform, i.e. the body is
-supported while `bodyLeft < ledgeX` — down to 1px of overlap. That is what
-makes the exploit representable.
+| tier       | runway→gap              | step-up | impossible gap | impossible wall |
+| ---------- | ----------------------- | ------: | -------------: | --------------: |
+| GUARANTEED | 0→7 1→9 2→9 4→10 7→10   |       5 |             14 |               7 |
+| NORMAL     | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
+| EXPERT     | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
+| ULTRA      | 0→9 1→10 2→11 4→12 7→12 |       6 |             14 |               7 |
 
-**Landing rule.** The jump clears gap `G` if, on the frame the body bottom
-first crosses the target surface while descending, `bodyRight > targetLeft`.
+**Tile quantisation collapses the top three tiers.** NORMAL, EXPERT and ULTRA
+floor to the same whole-tile ladder for same-height gaps: at runway=4 the
+values are 12.02 / 12.34 / 12.34, all of which floor to 12. On a tile grid
+there is simply no such thing as an EXPERT-only flat gap at most runways.
 
-**Side-clip guard.** When both the horizontal and vertical overlaps on that
-frame are tiny, Arcade's least-penetration separation can eject the body
-sideways instead of seating it on the tile — a real failure the naive rule
-would score as a success. Require ≥1px of horizontal overlap at the crossing
-frame and re-check the previous frame's position. Where the two disagree,
-take the conservative answer and log it; this is the one place the model can
-still drift from the engine, so §5 pins it with a Phaser integration test.
-
-### 3.3 The search
-
-For each `dt ∈ {1/30, 1/60, 1/144}`:
-
-- **takeoff phase** `s ∈ [0, MAX_RUN_SPEED_PX·dt)` step 0.25px — covers every
-  sub-frame alignment at the ledge.
-- **jump frame** `jf ∈ [0, framesToLedge + coyoteFrames]`, plus `jf = -1`
-  (never jump — a run-off can beat a jump for deep drops).
-- **hold duration** `∈ {1, 2, 3, 5, 8, 12, 20, full}` — matters for low
-  ceilings and rising targets, where a full jump clips its head.
-
-Report the **minimum across the three frame rates** so a qualifying jump works
-on every machine (per the frame-rate decision).
-
-### 3.4 Cost and caching
-
-The full sweep is ~10⁴–10⁵ sim runs per situation — tens of milliseconds, too
-slow to run per tool call in a chat loop.
-
-- Precompute a table at module load over `runwayTiles ∈ [0..8, 12, 20]` ×
-  `deltaYTiles ∈ [-12..+7]` with open sky, and interpolate conservatively
-  (round _down_) between rungs.
-- The geometry-aware path (with a ceiling or landing wall) is off the table, so
-  memoize on the situation key and solve lazily.
-- Coarse-to-fine: binary-search the gap and only sweep the input space near the
-  boundary, rather than sweeping every candidate gap.
-
-Budget: table build < 500ms at load, cached lookup < 1ms, cold geometry-aware
-solve < 50ms.
+This does not break the difficulty dial, but it does relocate where difficulty
+comes from. A _level_ is graded by `classifyJump` on its actual geometry —
+the (runway, gap, deltaY) triple — which discriminates fine. The levers that
+actually produce a hard level are **starving the runway** (a 9-tile gap is
+GUARANTEED off 7 tiles of run-up and impossible off 0), **climbing**
+(step-up 5 vs 6 does separate the tiers), and **chaining** near-limit jumps.
+Widening a flat gap alone saturates almost immediately.
 
 ---
 
-## 4. Integration
+## 3. What the engine validation caught
 
-### 4.1 `calculateJumpGaps` tool — both modes
+`__tests__/jumpSolverEngine.test.ts` imports Phaser's own `SeparateTile`
+chain straight out of the package — those modules are plain CommonJS and,
+unlike `phaser` itself, pull in no device detection, so they run in vitest
+with no DOM — and drives it with a faithful Arcade `Body` stand-in.
 
-Keep the abstract signature for planning; add optional real geometry.
+It paid for itself immediately, catching two bugs that every self-consistency
+test had passed:
 
-```ts
-{
-  runwayTiles: number,
-  deltaYTiles: number,
-  takeoffTile?: {x, y},   // if given, read real runway/ceiling/wall from scene
-  targetTile?: {x, y},
-  difficulty?: "EASY" | "NORMAL" | "HARD" | "BRUTAL",
-}
-```
+**1. The landing rule was too strict.** The solver required the body to cross
+the target's surface cleanly from above. Arcade actually separates a tile
+overlap on the axis of _least penetration_, so it seats you on top of a corner
+clip far more readily than that. The faithful rule is `sink ≤ overlap`, and it
+raises the true maximum. Caught when the real engine landed a jump the solver
+called impossible.
 
-Returns the full spectrum plus a `recommendedGapTiles` for the level's
-difficulty, and — critically — `latitudeFrames` so the model can _explain_ why
-a jump is hard. Description rewritten so Pewter stops treating one number as
-"the" answer, and stops calling `Math.floor` on it (the tool now returns
-already-rounded, tier-appropriate integers).
+**2. `impossibleTiles` was derived from the wrong statistic.** It came from
+the worst-case frame rate, but _"can I require this?"_ and _"is this flatly
+impossible?"_ are questions about different machines. At runway=0 the engine
+cleared a 10-tile gap that the solver had declared impossible, because 144fps
+reaches 10.05 tiles while the 30fps-limited figure is 9.55. Requirable tiers
+now come from the worst rate and `impossibleTiles` from the best, as separate
+fields (`ultraTiles` vs `bestCaseUltraTiles`). Getting this backwards made the
+reachability checker invent dead ends that a high-refresh player walks
+straight past.
 
-### 4.2 One engine everywhere
+A third assumption also turned out wrong, though harmlessly: a ceiling **over
+the runway** constrains nothing at all, because the longest jumps launch from
+past the ledge and simply fly out from under it. `ceilingTiles` is therefore a
+_corridor_ height spanning the runway and the gap.
 
-`MOVEMENT_CAPABILITIES` is rebuilt from `solveJump` instead of
-`rawJumpDistanceTiles`. `reachability.ts` takes a difficulty parameter and uses
-the matching tier's ladder. `movementPrompt.ts` renders the tier the level is
-set to, and states the ULTRA numbers as the hard "never possible above this"
-bound. `rawJumpDistanceTiles` and `calculateMaxGap` are deleted, not deprecated
-— leaving them is how the split-brain comes back.
+---
 
-### 4.3 Difficulty dial
+## 4. Design notes
 
-Level difficulty gates which tier Pewter may _require_ for progression:
+**Tiers.** `TIER_LATITUDE_MS` = GUARANTEED 150ms, NORMAL 66ms, EXPERT 32ms,
+ULTRA >0. `HUMAN_HARD_TIER` is EXPERT: ULTRA is a 1-frame window at 60fps that
+_also_ depends on a sub-pixel takeoff phase the player cannot see. It exists so
+the dial has a top end and so geometry can be checked against the true physical
+bound — but requiring it is a bug, not a difficulty setting. `BRUTAL` maps to
+ULTRA and the prompt tells Pewter to keep those jumps on optional routes only.
 
-| difficulty | max required tier | runway=4 budget |
-| ---------- | ----------------- | --------------- |
-| EASY       | GUARANTEED        | 10 tiles        |
-| NORMAL     | NORMAL            | 12 tiles        |
-| HARD       | EXPERT            | 12.5 tiles      |
-| BRUTAL     | ULTRA             | 12.75 tiles     |
+**Difficulty dial.** EASY→GUARANTEED, NORMAL→NORMAL, HARD→EXPERT,
+BRUTAL→ULTRA. It gates the hardest jump a level may _require_.
+`checkTraversal` and `verifyComplete` validate against it and report the
+level's rating: hardest required jump, plus how many near-limit jumps sit close
+enough together to chain.
 
-Optional/bonus routes (collectables, shortcuts) may exceed the level tier by
-one step — that is what a secret is for.
+**What a reachability PASS now means** is weaker than it used to be, and this
+is the one real cost of the rework. It used to mean "genuinely beatable by a
+competent player"; it now means "beatable at the declared tier". That is only
+safe because the tier is explicit — EASY levels still get the old promise, so
+the guarantee survives where it matters.
 
-`checkTraversal` / `verifyComplete` validate against the level's tier: a HARD
-level passes if beatable at EXPERT, and reports its own rating as _the hardest
-tier required on the critical path_ plus _how many near-max jumps are chained
-consecutively_ (three EXPERT jumps in a row is harder than one, and nothing in
-the current model can see that).
+**Everything is lazy.** A cold solve is ~50–100ms and the full fact-sheet
+needs a dozen, so `movementCapabilities` computes on first access and memoises.
+The running game must never pay that just to read a gravity constant — which is
+also why the derivation lives in its own module rather than in
+`playerPhysics.ts` (`jumpSolver` imports `playerPhysics`, so putting it there
+would be a cycle).
+
+**Performance.** The first version took 13.7s to build the fact-sheet. Two
+fixes brought it to ~2.2s with _better_ accuracy: the jump-frame lookback was
+scaled by `1/dt`, sweeping 230 frames of pointless run-up per phase at 144fps
+(now capped at 0.6s of real time); and the hold-duration sweep ran for every
+rising target, when cutting a jump short can only reduce both apex and airtime
+— so with open sky a full hold strictly dominates and the sweep is only needed
+under a ceiling. Coarsening the sub-pixel phase step was tried and reverted: at
+1px, runway=1 quietly lost a whole tile off its GUARANTEED rung.
 
 ---
 
 ## 5. Tests
 
-Extend `src/phaser/__tests__/playerPhysics.test.ts` and add
-`jumpSolver.test.ts`:
+- `jumpSolver.test.ts` (21) — tier ordering, latitude monotonicity, the
+  worst-case/best-case split, independent frame-by-frame replay of every
+  claim, and a lock on the coyote technique: **the optimal jump frame must be
+  strictly after the ledge frame.** If that ever regresses, the search has
+  lost the technique and the numbers have silently collapsed back to the
+  closed-form answer.
+- `jumpSolverEngine.test.ts` (5) — every claim replayed through Phaser's real
+  `SeparateTile`.
+- `movementCapabilities.test.ts` (16) — ladder monotonicity in both runway and
+  tier, impossibility bounds, the difficulty dial, `classifyJump` on real
+  geometry.
+- `reachability.test.ts` (10) — rewritten to derive every bound from the
+  solver instead of hardcoding tile counts. Five of these previously asserted
+  that things were impossible which the player can actually do.
+- `playerPhysics.test.ts` (21) — unchanged pure-physics tests. Its old
+  `MOVEMENT_CAPABILITIES` cross-check was deleted rather than ported: it
+  validated the ladder against a sim that jumps exactly at the ledge, which is
+  precisely the model that cannot express the coyote jump.
 
-1. **Monotonicity** — more runway never reduces any tier; every tier is ordered
-   `GUARANTEED ≤ NORMAL ≤ EXPERT ≤ ULTRA`.
-2. **Latitude semantics** — a gap at the GUARANTEED tier has ≥10 frames of
-   slop; ULTRA has exactly 1; `impossibleTiles` has 0 at every frame rate.
-3. **Regression floor** — the new numbers are never _below_ the old
-   `calculateMaxGap` output. Under-reporting was the bug; over-correcting into
-   under-reporting again is the regression to guard.
-4. **Frame-rate safety** — anything at or below `guaranteedTiles` lands at all
-   three rates.
-5. **Coyote exploit is represented** — for runway ≥ 2, the optimal jump frame
-   is strictly after the ledge frame. If this ever fails, the sim has lost the
-   thing this rework exists to capture.
-6. **Phaser integration test** (new, the important one) — drive a real Arcade
-   body through a real tilemap at the solver's claimed ULTRA gap with the
-   solver's claimed optimal inputs, and assert it lands. This is the only test
-   that can catch the §3.2 side-clip modelling risk; everything above only
-   proves the sim is self-consistent.
-
----
-
-## 6. Phasing
-
-Each phase is independently shippable and leaves the tree green.
-
-- **P1 — `jumpSolver.ts` + tests, nothing wired.** Land the engine and the
-  measured tables. Zero behaviour change.
-- **P2 — Phaser integration test.** Validate the sim against the real engine
-  before anything depends on it. If §3.2 is wrong, it is far cheaper to know
-  here.
-- **P3 — Rewire `calculateJumpGaps`** to the spectrum, both modes. Pewter gets
-  correct numbers; reachability still on the old ladder (they now disagree in a
-  _known_ direction — the tool is strictly more permissive).
-- **P4 — Rebuild `MOVEMENT_CAPABILITIES`, `reachability.ts`,
-  `movementPrompt.ts`** on the solver. Delete `calculateMaxGap` and
-  `rawJumpDistanceTiles`. Split-brain closed.
-- **P5 — Difficulty dial** through the tool schema, `checkTraversal`,
-  `verifyComplete`, and level rating.
+76 tests, all passing. `vite build` succeeds.
 
 ---
 
-## 7. Risks
+## 6. Known limitations
 
-**The engine may not agree with the sim at the 1px boundary.** Arcade's
-separation at simultaneous tiny x/y overlap is the least-certain part of the
-model, and it is exactly where ULTRA lives. P2 exists to answer this before P3+
-depend on it. If the engine disagrees, the fix is to shrink the landing rule's
-tolerance, not to abandon the tier.
-
-**ULTRA may not be humanly reachable.** A 1-frame window at 60fps is 16ms.
-That is achievable but brutal, and it assumes a specific sub-pixel takeoff
-phase the player cannot see. Treat BRUTAL as a design _ceiling_, not a target;
-the honest human-hard tier is EXPERT.
-
-**Widening the reachability ladder makes it less conservative.** Today a pass
-means "genuinely beatable". After P4 a pass means "beatable at the level's
-declared tier" — a weaker guarantee that is only safe because the tier is
-explicit. EASY levels must keep using GUARANTEED so the old guarantee survives
-where it matters.
-
-**Retuning physics constants now invalidates a precomputed table**, not just a
-formula. The table must be built at load from the live constants (never
-checked in), so retuning still propagates automatically.
+- **Reachability's rising-jump rule is still the old heuristic** (2 tiles of
+  gap per tile of rise) rather than a solver call per edge. The solver is used
+  for the ladder and for `classifyJump`; wiring it into every graph edge would
+  mean a solve per edge, which is too slow for the interactive checker.
+- **Arc clearance is unmodelled.** Jumps check takeoff-column headroom, not
+  the full flight path, so a ceiling mid-gap can still surprise the checker.
+  The tool's geometry-aware mode does read corridor ceilings; the graph
+  does not.
+- **`stopDistanceTiles` and `maxJumpApexTiles` remain closed-form.** They are
+  not gap problems and were out of scope.
+- **The step-up probe uses "can still land ≥1 tile out"** as its climb
+  criterion, which is a proxy for a true adjacent-wall climb.
+- **`tsc` reports pre-existing errors** in `src/enemySystem` and missing
+  vitest types; none are in the files this touched.
