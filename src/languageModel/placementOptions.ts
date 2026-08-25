@@ -8,6 +8,26 @@
  */
 import type { ReachableTarget } from "../phaser/movementCapabilities.ts";
 
+/**
+ * Describe how demanding a jump is, in terms a person can feel.
+ *
+ * The raw millisecond figure means nothing to the model or the player;
+ * "about 2 frames at 60fps" does.
+ */
+export function describeHardness(timingSlackMs: number): string {
+  const frames = Math.max(1, Math.round((timingSlackMs / 1000) * 60));
+  if (timingSlackMs >= 150) {
+    return `forgiving — about ${frames} frames of slack at 60fps`;
+  }
+  if (timingSlackMs >= 66) {
+    return `moderate — about ${frames} frames of slack at 60fps`;
+  }
+  if (timingSlackMs >= 32) {
+    return `VERY HARD — only about ${frames} frames of slack at 60fps`;
+  }
+  return `frame-perfect — about ${frames} frame of slack at 60fps, near the physical limit`;
+}
+
 /** One placement, fully specified. Nothing here may be mixed with anything else. */
 export interface PlacementOption {
   id: string;
