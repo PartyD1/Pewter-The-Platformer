@@ -7,6 +7,8 @@ import {
   LEVEL_DIFFICULTIES,
   reachableFrontier,
 } from "../../phaser/movementCapabilities.ts";
+import { buildPlacementOptions } from "../placementOptions.ts";
+import { getProcessingBox } from "../chatBox.ts";
 import { buildGridView } from "../sceneReachability.ts";
 
 /**
@@ -15,11 +17,23 @@ import { buildGridView } from "../sceneReachability.ts";
  *
  * `calculateMaxGap` can only score a jump the caller has already picked,
  * which turns this request into a guess-and-check search across two
- * dimensions — and the agent has an 8-round budget. Rising and reaching
- * trade off against each other, so the honest answer is the whole frontier
- * plus the two extremes, in concrete tile coordinates the agent can place at
- * directly.
+ * dimensions — and the agent has an 8-round budget.
+ *
+ * Hard-won shape notes, from watching a real transcript go wrong:
+ *
+ * 1. The reply used to be a flat `frontier` array of `{targetTile, ...}`.
+ *    The model took the X from the furthest entry and the Y from a
+ *    different one, producing a 13-tile gap at level height where 10 was
+ *    the maximum — a placement no entry had endorsed. Options are now
+ *    self-contained and labelled, and the rules say so explicitly.
+ * 2. `targetTile` was ambiguous. It names the cell the PLAYER occupies, but
+ *    the model read it as where to put blocks, shifting everything a tile.
+ *    Both coordinates are now spelled out separately and named for what
+ *    they are.
+ * 3. Nothing was clamped, so options fell outside the map and outside the
+ *    selection box the agent is forbidden to leave.
  */
+
 export class FindFurthestPlacement {
   sceneGetter: () => EditorScene;
 
@@ -31,18 +45,24 @@ export class FindFurthestPlacement {
     takeoffTile: z
       .object({ x: z.number(), y: z.number() })
       .describe(
-        "Tile coords of the tile the player jumps FROM — the standable tile at the edge of the takeoff platform (the empty tile the player stands on, not the solid block beneath).",
+        "Tile coords of the cell the player JUMPS FROM — the empty cell they stand on at the platform's edge, not the solid block beneath it.",
+      ),
+    platformWidthTiles: z
+      .number()
+      .optional()
+      .describe(
+        "How many tiles wide the landing platform will be. Defaults to 3. Options are only returned if the whole platform fits.",
+      ),
+    intent: z
+      .enum(["highest", "furthest", "balanced"])
+      .optional()
+      .describe(
+        "What the player asked for. 'highest' = as high up as possible, 'furthest' = as far across as possible, 'balanced' = a good mix. Sets which option is recommended.",
       ),
     direction: z
       .enum(["right", "left"])
       .optional()
       .describe("Which way the player jumps. Defaults to right."),
-    runwayTiles: z
-      .number()
-      .optional()
-      .describe(
-        "Override the run-up. Normally omit this — the real run-up is measured from the live map.",
-      ),
     difficulty: z
       .enum(LEVEL_DIFFICULTIES)
       .optional()
@@ -56,80 +76,100 @@ export class FindFurthestPlacement {
       const difficulty = args.difficulty ?? getLevelDifficulty();
       const tier = DIFFICULTY_TIER[difficulty];
       const dir = args.direction === "left" ? -1 : 1;
+      const width = Math.max(1, Math.round(args.platformWidthTiles ?? 3));
       const { x: tx, y: ty } = args.takeoffTile;
+      const scene = this.sceneGetter();
+      const grid = buildGridView(scene);
+      const box = getProcessingBox() ?? scene.activeBox;
 
-      // Measure the real run-up unless explicitly overridden.
-      let runwayTiles = args.runwayTiles ?? 0;
-      if (args.runwayTiles === undefined) {
-        const grid = buildGridView(this.sceneGetter());
-        if (grid) {
-          const standable = (x: number, y: number) =>
-            x >= 0 &&
-            x < grid.width &&
-            y >= 0 &&
-            y + 1 < grid.height &&
-            !grid.isSolid(x, y) &&
-            grid.isSolid(x, y + 1);
-          while (
-            runwayTiles < 12 &&
-            standable(tx - dir * (runwayTiles + 1), ty)
-          ) {
-            runwayTiles++;
-          }
+      // Measure the real run-up from the live map.
+      let runwayTiles = 0;
+      if (grid) {
+        const standable = (x: number, y: number) =>
+          x >= 0 &&
+          x < grid.width &&
+          y >= 0 &&
+          y + 1 < grid.height &&
+          !grid.isSolid(x, y) &&
+          grid.isSolid(x, y + 1);
+        while (
+          runwayTiles < 12 &&
+          standable(tx - dir * (runwayTiles + 1), ty)
+        ) {
+          runwayTiles++;
         }
       }
 
-      const frontier = reachableFrontier(runwayTiles, tier);
-      if (frontier.length === 0) {
+      const options = buildPlacementOptions(
+        reachableFrontier(runwayTiles, tier),
+        {
+          takeoff: { x: tx, y: ty },
+          dir,
+          width,
+          mapWidth: grid?.width,
+          mapHeight: grid?.height,
+          inBox: box ? (x, y) => box.containsPoint(x, y) : undefined,
+        },
+      );
+
+      if (options.length === 0) {
         return JSON.stringify({
           takeoffTile: args.takeoffTile,
           runwayTiles,
           error:
-            "Nothing is reachable from this takeoff tile — it has no run-up and no landable target. Widen the takeoff platform.",
+            "No reachable placement fits inside the selection box and the map. " +
+            "Either the selection box is too small, the takeoff platform has no run-up, or the platform is too wide. " +
+            "Widen the selection box or reduce platformWidthTiles.",
         });
       }
 
-      // Concrete coordinates: a gap of N tiles lands N+1 tiles along.
-      const place = (t: (typeof frontier)[number]) => ({
-        targetTile: { x: tx + dir * (t.gapTiles + 1), y: ty - t.deltaYTiles },
-        gapTiles: t.gapTiles,
-        risesTiles: t.deltaYTiles,
-        timingSlackMs: t.timingSlackMs,
-      });
+      // Options are ordered highest-first.
+      const highest = options[0];
+      let furthest = options[0];
+      for (const o of options) if (o.gapTiles > furthest.gapTiles) furthest = o;
+      const balanced = options[Math.floor(options.length / 2)];
 
-      const highest = frontier[0];
-      let furthest = frontier[0];
-      for (const t of frontier)
-        if (t.gapTiles > furthest.gapTiles) furthest = t;
+      const intent = args.intent ?? "balanced";
+      const recommended =
+        intent === "highest"
+          ? highest
+          : intent === "furthest"
+            ? furthest
+            : balanced;
 
       console.log(
-        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} -> highest +${highest.deltaYTiles} / furthest ${furthest.gapTiles}`,
+        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} width=${width} intent=${intent} -> ${recommended.id}`,
       );
 
       return JSON.stringify({
         takeoffTile: args.takeoffTile,
         direction: args.direction ?? "right",
         runwayTiles,
+        platformWidthTiles: width,
         levelDifficulty: difficulty,
         requiredTier: tier,
-        highest: place(highest),
-        furthest: place(furthest),
-        frontier: frontier.map(place),
-        note:
-          "Rising costs reach, so 'highest' and 'furthest' are usually different tiles — pick from 'frontier' if you want a compromise. " +
-          "These positions are already the limit for this difficulty; do not push past them. " +
-          "targetTile is where the landing platform's NEAR edge must go.",
+        intent,
+        recommended,
+        options,
+        rules: [
+          "USE 'recommended' UNLESS YOU HAVE A REASON NOT TO. It already matches the requested intent.",
+          "Each option is a COMPLETE placement. Never take x from one option and y from another — that produces a jump no option endorsed and the player cannot make it.",
+          "Call placeGridofTiles with placeSolidBlocksAt: fromX..toX at row y. Do NOT place blocks at playerLandsOn — that is the empty cell the player occupies, one row above the blocks.",
+          "Do not move the platform further across or higher than the option you picked. These are limits, not suggestions.",
+          "Rising costs reach: the highest option is never also the furthest.",
+          "verifyComplete passing does NOT prove this jump works — the player may be able to reach the platform another way, e.g. by walking along the ground and hopping up. If you want the jump itself checked, call calculateMaxGap with takeoffTile and targetTile.",
+        ],
       });
     },
     {
       name: "findFurthestPlacement",
       schema: FindFurthestPlacement.argsSchema,
       description:
-        "Find the extreme positions a platform can be placed at while staying reachable, given where the player jumps from. " +
-        "Use this whenever the player asks for something 'as far as possible', 'as high as possible', 'at the very edge', or otherwise at the limit of what is reachable. " +
-        "Returns concrete target tile coordinates for the highest reachable spot, the furthest reachable spot, and the full trade-off curve between them — " +
-        "computed by simulating the real game physics, so the answers are exact. " +
-        "Prefer this over guessing a position and checking it with calculateMaxGap.",
+        "Find where a platform can be placed so the player can still jump to it from a given takeoff point, at the limit of what is reachable. " +
+        "Use this whenever the player asks for something 'as far as possible', 'as high as possible', 'at the very edge', or otherwise at the limit. " +
+        "Returns complete, ready-to-build placements — the exact blocks to place and the cell the player will land on — computed by simulating the real game physics. " +
+        "Every option is clamped to the map and the selection box, so anything it returns is safe to build. " +
+        "Pass 'intent' to say what the player actually asked for, then build the 'recommended' option verbatim.",
     },
   );
 }
