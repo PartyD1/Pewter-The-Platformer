@@ -71,8 +71,8 @@ the retired formula. GUARANTEED/NORMAL/EXPERT/ULTRA are worst-case across
 |      4 |  11.05 |      10.60 |  11.91 |  12.35 | 12.66 |     12.74 |      **+1.61** |
 |      7 |  11.33 |      10.57 |  11.94 |  12.38 | 12.76 |     12.89 |      **+1.42** |
 
-The old formula was leaving **1.2–4.6 tiles** on the table — worst on the
-standing jump, where it reported 4.98 tiles against a real 9.55 (+92%).
+The old formula was leaving **1.4–4.8 tiles** on the table — worst on the
+standing jump, where it reported 4.98 tiles against a real 9.77 (+96%).
 
 Note the GUARANTEED column sits _below_ the legacy number at runway ≥ 2. That
 is correct and intentional: legacy claimed a single number with a flat 0.4-tile
