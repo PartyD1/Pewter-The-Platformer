@@ -1,5 +1,7 @@
 import { describe, expect, it } from "vitest";
-import { buildPlacementOptions } from "../placementOptions";
+import { buildPlacementOptions, describeHardness } from "../placementOptions";
+import { DIFFICULTY_TIER } from "../../phaser/movementCapabilities";
+import { TIER_LATITUDE_MS } from "../../phaser/jumpSolver";
 import type { ReachableTarget } from "../../phaser/movementCapabilities";
 
 const frontier: ReachableTarget[] = [
@@ -95,6 +97,31 @@ describe("placement options", () => {
     });
     expect(narrow.length).toBe(1);
     expect(wide.length).toBe(0);
+  });
+
+  it("an at-the-limit request resolves to a genuinely hard tier", () => {
+    // The player's complaint was that "furthest possible" produced jumps
+    // that were "not hard whatsoever". findFurthestPlacement now defaults
+    // to HARD rather than the level's everyday difficulty; HARD must stay
+    // strictly harder than NORMAL or the complaint comes straight back.
+    const limitTier = DIFFICULTY_TIER.HARD;
+    expect(limitTier).toBe("EXPERT");
+    expect(TIER_LATITUDE_MS[limitTier]).toBeLessThan(
+      TIER_LATITUDE_MS[DIFFICULTY_TIER.NORMAL],
+    );
+    // ...but still not the frame-perfect tier, which is not humanly fair.
+    expect(TIER_LATITUDE_MS[limitTier]).toBeGreaterThan(
+      TIER_LATITUDE_MS[DIFFICULTY_TIER.BRUTAL],
+    );
+  });
+
+  it("describes hardness in frames, and calls the limit tier VERY HARD", () => {
+    expect(describeHardness(500)).toContain("forgiving");
+    expect(describeHardness(100)).toContain("moderate");
+    expect(describeHardness(TIER_LATITUDE_MS.EXPERT)).toContain("VERY HARD");
+    expect(describeHardness(16)).toContain("frame-perfect");
+    // The number a player can act on is frames, not milliseconds.
+    expect(describeHardness(TIER_LATITUDE_MS.EXPERT)).toMatch(/2 frames/);
   });
 
   it("gives every option a distinct, self-describing id", () => {

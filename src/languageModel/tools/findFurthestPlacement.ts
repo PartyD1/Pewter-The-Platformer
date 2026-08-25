@@ -3,11 +3,14 @@ import { z } from "zod";
 import type { EditorScene } from "../../phaser/editorScene.ts";
 import {
   DIFFICULTY_TIER,
-  getLevelDifficulty,
   LEVEL_DIFFICULTIES,
+  type LevelDifficulty,
   reachableFrontier,
 } from "../../phaser/movementCapabilities.ts";
-import { buildPlacementOptions } from "../placementOptions.ts";
+import {
+  buildPlacementOptions,
+  describeHardness,
+} from "../placementOptions.ts";
 import { getProcessingBox } from "../chatBox.ts";
 import { buildGridView } from "../sceneReachability.ts";
 
@@ -34,6 +37,17 @@ import { buildGridView } from "../sceneReachability.ts";
  *    selection box the agent is forbidden to leave.
  */
 
+/**
+ * Difficulty an at-the-limit request is answered at, unless overridden.
+ *
+ * HARD maps to the EXPERT tier: ~32ms of timing slack, about two frames at
+ * 60fps. That is the hardest jump a human can be asked to land reliably.
+ * BRUTAL (ULTRA) is available on request but is frame-perfect AND depends
+ * on a sub-pixel takeoff phase the player cannot see, so it is not a
+ * sensible default even for "as far as possible".
+ */
+const LIMIT_DIFFICULTY: LevelDifficulty = "HARD";
+
 export class FindFurthestPlacement {
   sceneGetter: () => EditorScene;
 
@@ -55,9 +69,9 @@ export class FindFurthestPlacement {
       ),
     intent: z
       .enum(["highest", "furthest", "balanced"])
-      .optional()
       .describe(
-        "What the player asked for. 'highest' = as high up as possible, 'furthest' = as far across as possible, 'balanced' = a good mix. Sets which option is recommended.",
+        "REQUIRED. What the player actually asked for: 'furthest' = as far across as possible, 'highest' = as high up as possible, 'balanced' = a deliberate compromise. " +
+          "Only pass 'balanced' if the player did NOT ask for an extreme — it returns a mid-range placement, which will feel easy.",
       ),
     direction: z
       .enum(["right", "left"])
@@ -67,13 +81,20 @@ export class FindFurthestPlacement {
       .enum(LEVEL_DIFFICULTIES)
       .optional()
       .describe(
-        "Difficulty to budget against. Defaults to the level's current difficulty.",
+        "Override the difficulty. Leave this out for at-the-limit requests — the default is already HARD. Pass 'BRUTAL' only if the player explicitly wants a frame-perfect, near-impossible jump.",
       ),
   });
 
   toolCall = tool(
     async (args: z.infer<typeof FindFurthestPlacement.argsSchema>) => {
-      const difficulty = args.difficulty ?? getLevelDifficulty();
+      // This tool exists ONLY to answer "put it at the limit". Budgeting
+      // that against the level's everyday difficulty produced jumps the
+      // player described as "not hard whatsoever" — NORMAL leaves ~66ms of
+      // slack, which is comfortable. An at-the-limit request is a request
+      // for a hard jump, so default to the hardest tier a human can
+      // actually be asked to hit, and let `difficulty` override downward
+      // (or up to BRUTAL) when the player says otherwise.
+      const difficulty = args.difficulty ?? LIMIT_DIFFICULTY;
       const tier = DIFFICULTY_TIER[difficulty];
       const dir = args.direction === "left" ? -1 : 1;
       const width = Math.max(1, Math.round(args.platformWidthTiles ?? 3));
@@ -129,7 +150,7 @@ export class FindFurthestPlacement {
       for (const o of options) if (o.gapTiles > furthest.gapTiles) furthest = o;
       const balanced = options[Math.floor(options.length / 2)];
 
-      const intent = args.intent ?? "balanced";
+      const intent = args.intent;
       const recommended =
         intent === "highest"
           ? highest
@@ -138,7 +159,7 @@ export class FindFurthestPlacement {
             : balanced;
 
       console.log(
-        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} width=${width} intent=${intent} -> ${recommended.id}`,
+        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} width=${width} intent=${intent} difficulty=${difficulty} -> ${recommended.id} (${recommended.timingSlackMs}ms)`,
       );
 
       return JSON.stringify({
@@ -149,10 +170,14 @@ export class FindFurthestPlacement {
         levelDifficulty: difficulty,
         requiredTier: tier,
         intent,
-        recommended,
+        recommended: {
+          ...recommended,
+          hardness: describeHardness(recommended.timingSlackMs),
+        },
         options,
         rules: [
           "USE 'recommended' UNLESS YOU HAVE A REASON NOT TO. It already matches the requested intent.",
+          "This is meant to be a HARD jump. Do not soften it, do not move the platform closer, and do not apologise for the difficulty — the player asked for the limit.",
           "Each option is a COMPLETE placement. Never take x from one option and y from another — that produces a jump no option endorsed and the player cannot make it.",
           "Call placeGridofTiles with placeSolidBlocksAt: fromX..toX at row y. Do NOT place blocks at playerLandsOn — that is the empty cell the player occupies, one row above the blocks.",
           "Do not move the platform further across or higher than the option you picked. These are limits, not suggestions.",
