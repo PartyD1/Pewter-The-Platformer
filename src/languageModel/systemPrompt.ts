@@ -23,8 +23,12 @@ const TOOL_GUIDANCE =
   "It simulates the real game physics and tells you the widest gap that is actually crossable, and how much timing slack it leaves the player. " +
   "Never estimate a jump distance yourself — your intuition about this game's physics is wrong, and a gap one tile too wide makes the level impossible. " +
   "When the player asks for a platform placed 'as far as possible', 'as high as possible', or otherwise at the limit, call findFurthestPlacement — " +
-  "it returns the full set of reachable positions from a takeoff platform, so you can pick the extreme one instead of guessing and checking. " +
-  "Use checkTraversal at any point to confirm the level is still beatable; it is read-only and free. ";
+  "it returns complete, ready-to-build placements from a takeoff platform, so you can build one verbatim instead of guessing and checking. " +
+  "Build the option it recommends exactly as given: each option is a whole placement, and taking the X from one option and the Y from another produces a jump the player cannot make. " +
+  "Never place a platform further across or higher than the option you chose — these are limits, not suggestions. " +
+  "Use checkTraversal at any point to confirm the level is still beatable; it is read-only and free. " +
+  "IMPORTANT: verifyComplete passing does NOT prove a particular jump is makeable. It only proves the level is completable somehow — the player may be reaching a platform by walking along the ground and hopping up rather than by the jump you intended. " +
+  "When the player asked for a specific jump between two platforms, check that jump directly with calculateMaxGap. ";
 
 /**
  * The complete system prompt. Rebuilt on each call because the movement
