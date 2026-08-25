@@ -22,6 +22,14 @@ const TOOL_GUIDANCE =
   "Before you place any platform that the player must jump to, call calculateMaxGap. " +
   "It simulates the real game physics and tells you the widest gap that is actually crossable, and how much timing slack it leaves the player. " +
   "Never estimate a jump distance yourself — your intuition about this game's physics is wrong, and a gap one tile too wide makes the level impossible. " +
+  "LIMIT REQUESTS: if the player says 'as far as possible', 'furthest', 'as high as possible', 'at the very edge', 'as hard as you can', or anything else meaning the limit, " +
+  "they are asking for a GENUINELY HARD jump. Build it at the limit and do not soften it. Pass the matching 'intent' to findFurthestPlacement " +
+  "('furthest' for distance, 'highest' for height) — never 'balanced', which deliberately returns an easy mid-range placement. " +
+  "Do not move the platform closer than the tool says, do not round the numbers, and do not warn the player that it might be difficult — difficulty is what they asked for. " +
+  "If the player goes further and asks for something 'brutal', 'frame perfect', 'near impossible', or 'as hard as physically possible', pass difficulty 'BRUTAL' as well — " +
+  "that unlocks the true physical limit, which leaves only a single frame of slack. " +
+  "Note that a maximum-height jump is limited by the climb itself, so its difficulty cannot be raised any further: if the player wants a harder jump than that, " +
+  "give them more horizontal distance instead, or widen the takeoff platform so a longer run-up makes a longer jump possible. " +
   "When the player asks for a platform placed 'as far as possible', 'as high as possible', or otherwise at the limit, call findFurthestPlacement — " +
   "it returns complete, ready-to-build placements from a takeoff platform, so you can build one verbatim instead of guessing and checking. " +
   "Build the option it recommends exactly as given: each option is a whole placement, and taking the X from one option and the Y from another produces a jump the player cannot make. " +

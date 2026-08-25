@@ -88,6 +88,19 @@ describe("the system prompt Pewter actually receives", () => {
     }
   });
 
+  it("treats limit requests as a demand for a genuinely hard jump", () => {
+    // "as far as possible" used to be answered at the level's everyday
+    // difficulty, which the player reported as "not hard whatsoever".
+    expect(prompt).toMatch(/GENUINELY HARD/);
+    expect(prompt).toMatch(/never 'balanced'/);
+    expect(prompt).toMatch(/do not warn the player that it might be difficult/);
+    expect(prompt).toContain("BRUTAL");
+  });
+
+  it("explains that a max-height jump cannot be made harder", () => {
+    expect(prompt).toMatch(/limited by the climb itself/);
+  });
+
   it("tells the model not to estimate jump distances itself", () => {
     expect(prompt).toMatch(/[Nn]ever estimate a jump distance/);
   });
