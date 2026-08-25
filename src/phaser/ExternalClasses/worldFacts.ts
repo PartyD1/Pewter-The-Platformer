@@ -1,5 +1,9 @@
 import type { EditorScene } from "../editorScene.ts";
-import { MOVEMENT_CAPABILITIES, runwayNeededForGap } from "../playerPhysics.ts";
+import {
+  currentFacts,
+  currentTier,
+  runwayNeededForGap,
+} from "../movementCapabilities.ts";
 import {
   computeReachability,
   isStandable,
@@ -584,10 +588,10 @@ export class WorldFacts {
         continue;
       }
       const width = pit.xEnd - pit.xStart + 1;
-      const needed = runwayNeededForGap(width);
+      const needed = runwayNeededForGap(width, currentTier());
       let sentence: string;
       if (needed === null) {
-        sentence = `The pit from x=${pit.xStart} to x=${pit.xEnd} is ${width} tiles wide — IMPOSSIBLE to jump (maximum is ${MOVEMENT_CAPABILITIES.maxGapTiles} tiles).`;
+        sentence = `The pit from x=${pit.xStart} to x=${pit.xEnd} is ${width} tiles wide — IMPOSSIBLE to jump (maximum is ${currentFacts().maxGapTiles} tiles).`;
       } else {
         sentence =
           `The pit from x=${pit.xStart} to x=${pit.xEnd} is ${width} tiles wide — needs at least ${needed} tile(s) of run-up` +

@@ -4,7 +4,6 @@ import {
   GRAVITY_PX,
   JUMP_VELOCITY_PX,
   MAX_RUN_SPEED_PX,
-  MOVEMENT_CAPABILITIES,
   stepMovement,
   TERMINAL_VELOCITY_PX,
   TILE,
@@ -223,51 +222,12 @@ describe("jump gap range (~5.4 tiles standing → ~11.7 tiles full speed)", () =
   });
 });
 
-describe("MOVEMENT_CAPABILITIES cross-check (AI facts vs real physics)", () => {
-  /** Run `runwayTiles` from a standstill, jump, return flight distance. */
-  function flightDistanceAfterRunway(runwayTiles: number): number {
-    const sim = new Sim(FPS_60);
-    while (sim.x < runwayTiles * TILE) sim.step(1, false);
-    const takeoffX = sim.x;
-    sim.step(1, true);
-    expect(sim.jumps).toBe(1);
-    let frames = 1;
-    while (!sim.onGround && frames < 1000) {
-      sim.step(1, true);
-      frames++;
-    }
-    return (sim.x - takeoffX) / TILE;
-  }
-
-  it("every gap-ladder rung is crossable in simulation, with margin", () => {
-    for (const rung of MOVEMENT_CAPABILITIES.gapForRunway) {
-      const flight = flightDistanceAfterRunway(rung.runwayTiles);
-      expect(flight).toBeGreaterThan(rung.gapTiles + 0.15);
-    }
-  });
-
-  it("impossibleGapTiles is uncrossable even with unlimited runway", () => {
-    expect(flightDistanceAfterRunway(50)).toBeLessThan(
-      MOVEMENT_CAPABILITIES.impossibleGapTiles,
-    );
-  });
-
-  it("guaranteed step-up clears the sim apex; impossible wall exceeds it", () => {
-    const apex = jumpAndLand(FPS_60, 10_000).apexTiles;
-    expect(apex).toBeGreaterThan(MOVEMENT_CAPABILITIES.maxStepUpTiles + 0.5);
-    expect(apex).toBeLessThan(MOVEMENT_CAPABILITIES.impossibleWallTiles);
-  });
-
-  it("ladder is monotonic and body is sub-tile", () => {
-    const gaps = MOVEMENT_CAPABILITIES.gapForRunway.map((r) => r.gapTiles);
-    for (let i = 1; i < gaps.length; i++) {
-      expect(gaps[i]).toBeGreaterThanOrEqual(gaps[i - 1]);
-    }
-    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.width).toBeLessThan(1);
-    expect(MOVEMENT_CAPABILITIES.playerSizeTiles.height).toBeLessThan(1);
-    expect(MOVEMENT_CAPABILITIES.fallsThroughOneTileGap).toBe(true);
-  });
-});
+// The MOVEMENT_CAPABILITIES cross-check that used to live here has moved to
+// __tests__/movementCapabilities.test.ts. It validated the old closed-form
+// ladder against a sim that jumps exactly at the ledge -- which is the very
+// model that under-reported the real maximum, since it cannot express the
+// coyote-time jump the true maximum depends on. The ladder is now solver-
+// derived and validated against Phaser's own collision code instead.
 
 describe("coyote time", () => {
   function runOffLedge(fallFrames: number) {
