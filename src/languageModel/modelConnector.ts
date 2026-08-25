@@ -11,7 +11,12 @@ const modelName: string | undefined = import.meta.env.VITE_LLM_MODEL_NAME;
 if (!apiKey) throw new Error("Missing VITE_LLM_API_KEY in .env file!");
 if (!modelName) throw new Error("Missing VITE_LLM_MODEL_NAME in .env file!");
 
-const llmTemp = 0.7;
+/**
+ * Kept low deliberately: Pewter's job is tool orchestration against exact
+ * coordinates, where sampling variance reads as flakiness — the same request
+ * should build the same level. 0.7 produced visibly inconsistent tool use.
+ */
+const llmTemp = 0.3;
 
 // UNUSED — initializeLLM is never called. Active system prompt is in chatBox.ts.
 const outdatedInitialSysPrompt =

@@ -124,6 +124,71 @@ describe("placement options", () => {
     expect(describeHardness(TIER_LATITUDE_MS.EXPERT)).toMatch(/2 frames/);
   });
 
+  describe("terrain pass", () => {
+    // A default-map-like world: continuous solid ground from row 13 down,
+    // the player stands on row 12.
+    const groundFrom13 = (_x: number, y: number) => y >= 13;
+
+    it("a flat jump over continuous ground demands the pit be dug to the map bottom", () => {
+      const [opt] = buildPlacementOptions([frontier[1]], {
+        ...base,
+        isSolid: groundFrom13,
+      });
+      // gap 10: columns 10..19 between takeoff x=9 and landing x=20.
+      expect(opt.clearTheseTilesFirst).toEqual([
+        { fromX: 10, toX: 19, fromY: 13, toY: 19 },
+      ]);
+      // The landing surface across the pit is the existing ground.
+      expect(opt.needsBlockPlacement).toBe(false);
+    });
+
+    it("open sky needs no clearing and does need blocks", () => {
+      const opts = buildPlacementOptions([frontier[0]], {
+        ...base,
+        isSolid: () => false,
+      });
+      expect(opts[0].clearTheseTilesFirst).toEqual([]);
+      expect(opts[0].needsBlockPlacement).toBe(true);
+    });
+
+    it("drops an option whose pit the selection box does not allow digging", () => {
+      const shallowBox = (_x: number, y: number) => y <= 14; // pit rows 13..19 not fully inside
+      const opts = buildPlacementOptions([frontier[1]], {
+        ...base,
+        isSolid: groundFrom13,
+        inBox: shallowBox,
+      });
+      expect(opts.length).toBe(0);
+
+      const fullBox = (_x: number, _y: number) => true;
+      const ok = buildPlacementOptions([frontier[1]], {
+        ...base,
+        isSolid: groundFrom13,
+        inBox: fullBox,
+      });
+      expect(ok.length).toBe(1);
+    });
+
+    it("a drop into existing ground opens the landing shaft only down to the landing cell", () => {
+      const drop: ReachableTarget = {
+        deltaYTiles: -3,
+        gapTiles: 12,
+        timingSlackMs: 80,
+      };
+      const [opt] = buildPlacementOptions([drop], {
+        ...base,
+        isSolid: groundFrom13,
+      });
+      // landX = 22, landY = 15, blocks at 16 (already solid ground).
+      expect(opt.playerLandsOn).toEqual({ x: 22, y: 15 });
+      expect(opt.clearTheseTilesFirst).toEqual([
+        { fromX: 10, toX: 21, fromY: 13, toY: 19 }, // the pit
+        { fromX: 22, toX: 24, fromY: 13, toY: 15 }, // the landing shaft
+      ]);
+      expect(opt.needsBlockPlacement).toBe(false);
+    });
+  });
+
   it("gives every option a distinct, self-describing id", () => {
     const opts = buildPlacementOptions(frontier, base);
     const ids = opts.map((o) => o.id);

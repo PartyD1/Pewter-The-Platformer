@@ -33,6 +33,9 @@ const TOOL_GUIDANCE =
   "When the player asks for a platform placed 'as far as possible', 'as high as possible', or otherwise at the limit, call findFurthestPlacement — " +
   "it returns complete, ready-to-build placements from a takeoff platform, so you can build one verbatim instead of guessing and checking. " +
   "Build the option it recommends exactly as given: each option is a whole placement, and taking the X from one option and the Y from another produces a jump the player cannot make. " +
+  "Execute its 'buildIt' tool calls in order and verbatim. The clearTile calls in it DIG THE GAP out of existing ground — skip them and there is no jump, just a walk across solid tiles. " +
+  "After building, run its 'afterBuilding' calculateMaxGap check to confirm the built jump matches the design. " +
+  "When the response includes a 'playerTip', repeat it to the player: jumps at the limit require running OFF the edge and pressing jump just after leaving it, and a player who does not know the technique will call the level broken. " +
   "Never place a platform further across or higher than the option you chose — these are limits, not suggestions. " +
   "Use checkTraversal at any point to confirm the level is still beatable; it is read-only and free. " +
   "IMPORTANT: verifyComplete passing does NOT prove a particular jump is makeable. It only proves the level is completable somehow — the player may be reaching a platform by walking along the ground and hopping up rather than by the jump you intended. " +

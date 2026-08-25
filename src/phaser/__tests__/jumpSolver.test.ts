@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  findInputForGap,
   findOptimalInput,
   HUMAN_HARD_TIER,
   JUMP_TIERS,
@@ -343,6 +344,19 @@ describe("geometry constraints", () => {
   it("a target above the jump apex is unreachable at any timing", () => {
     const spec = solveJump({ runwayTiles: 7, deltaYTiles: 12 });
     expect(spec.ultraTiles).toBe(0);
+  });
+});
+
+describe("findInputForGap", () => {
+  it("finds a replayable input for a clearable gap, and none for an impossible one", () => {
+    const s: JumpSituation = { runwayTiles: 2, deltaYTiles: 0 };
+    const spec = solveJump(s);
+    const gap = Math.floor(spec.guaranteedTiles);
+    const inp = findInputForGap(s, gap, 1 / 60);
+    expect(inp).not.toBeNull();
+    expect(inp!.gapTiles).toBe(gap);
+    expect(inp!.dt).toBe(1 / 60);
+    expect(findInputForGap(s, spec.impossibleTiles, 1 / 60)).toBeNull();
   });
 });
 

@@ -15,7 +15,12 @@
  */
 import { describe, expect, it } from "vitest";
 import SeparateTile from "phaser/src/physics/arcade/tilemap/SeparateTile.js";
-import { findOptimalInput, solveJump, SOLVER_FRAME_RATES } from "../jumpSolver";
+import {
+  findInputForGap,
+  findOptimalInput,
+  solveJump,
+  SOLVER_FRAME_RATES,
+} from "../jumpSolver";
 import {
   createMovementState,
   GRAVITY_PX,
@@ -330,6 +335,43 @@ describe("solver claims hold up against Phaser's real tile separation", () => {
           res.landedOnTarget,
           `runway=${runwayTiles} gap=${spec.impossibleTiles} dt=${dt.toFixed(4)}`,
         ).toBe(false);
+      }
+    }
+  });
+
+  it("rising placements — the frontier's demo-critical case — land in the real engine", () => {
+    // The furthest-placement tool builds RISING jumps from the frontier,
+    // and rising is exactly where the landing model is trickiest: the
+    // target's leading face is a wall, so the landable set is a band. The
+    // replay must use the input for the exact floored gap, not the max-gap
+    // input, which can smack that wall on a nearer platform.
+    for (const deltaYTiles of [1, 3]) {
+      const s = { runwayTiles: 4, deltaYTiles };
+      const spec = solveJump(s);
+      const gap = Math.floor(spec.expertTiles);
+      expect(
+        gap,
+        `deltaY=${deltaYTiles} has no EXPERT gap at all`,
+      ).toBeGreaterThanOrEqual(1);
+      for (const dt of SOLVER_FRAME_RATES) {
+        const best = findInputForGap(s, gap, dt);
+        expect(
+          best,
+          `no input clears deltaY=${deltaYTiles} gap=${gap} at dt=${dt.toFixed(4)}`,
+        ).not.toBeNull();
+        const res = runEngine(
+          dt,
+          4,
+          best!.phasePx,
+          best!.jumpFrame,
+          best!.holdFrames,
+          gap,
+          deltaYTiles,
+        );
+        expect(
+          res.landedOnTarget,
+          `deltaY=${deltaYTiles} gap=${gap} dt=${dt.toFixed(4)}`,
+        ).toBe(true);
       }
     }
   });

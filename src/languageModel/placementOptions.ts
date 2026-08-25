@@ -28,6 +28,14 @@ export function describeHardness(timingSlackMs: number): string {
   return `frame-perfect — about ${frames} frame of slack at 60fps, near the physical limit`;
 }
 
+/** An inclusive rectangle of tiles, in the same shape clearTile takes. */
+export interface ClearRect {
+  fromX: number;
+  toX: number;
+  fromY: number;
+  toY: number;
+}
+
 /** One placement, fully specified. Nothing here may be mixed with anything else. */
 export interface PlacementOption {
   id: string;
@@ -38,6 +46,18 @@ export interface PlacementOption {
   gapTiles: number;
   risesTiles: number;
   timingSlackMs: number;
+  /**
+   * Solid tiles that must be REMOVED before this jump exists. On a map with
+   * continuous ground, "the furthest jump" is mostly a pit that has not been
+   * dug yet — leave these tiles in place and the player simply walks across.
+   * Empty when the gap is already open air.
+   */
+  clearTheseTilesFirst: ClearRect[];
+  /**
+   * False when every block cell of the platform is already solid in the map
+   * (e.g. landing on existing ground across a dug pit) — placing is a no-op.
+   */
+  needsBlockPlacement: boolean;
 }
 
 export interface PlacementBounds {
@@ -51,6 +71,14 @@ export interface PlacementBounds {
   mapHeight?: number;
   /** Selection box test. Omitted when there is no active box. */
   inBox?: (x: number, y: number) => boolean;
+  /**
+   * Live-map solidity test. When given, options are checked against the
+   * real terrain: anything standing where the gap or the landing cell must
+   * be open becomes a `clearTheseTilesFirst` rect (dropped instead if the
+   * box forbids clearing it), and `needsBlockPlacement` reports whether the
+   * platform blocks already exist. Omitted in pure-math contexts.
+   */
+  isSolid?: (x: number, y: number) => boolean;
 }
 
 /**
@@ -62,6 +90,43 @@ export interface PlacementBounds {
  * forbidden to build is worse than no option at all: it will build it and
  * get rejected, burning a round.
  */
+/** Tight bounding rect of the solid cells inside a region, or null if none. */
+function tightSolidRect(
+  isSolid: (x: number, y: number) => boolean,
+  fromX: number,
+  toX: number,
+  fromY: number,
+  toY: number,
+): ClearRect | null {
+  let minX = Infinity;
+  let maxX = -Infinity;
+  let minY = Infinity;
+  let maxY = -Infinity;
+  for (let x = fromX; x <= toX; x++) {
+    for (let y = fromY; y <= toY; y++) {
+      if (!isSolid(x, y)) continue;
+      if (x < minX) minX = x;
+      if (x > maxX) maxX = x;
+      if (y < minY) minY = y;
+      if (y > maxY) maxY = y;
+    }
+  }
+  if (minX === Infinity) return null;
+  return { fromX: minX, toX: maxX, fromY: minY, toY: maxY };
+}
+
+function rectInBox(
+  r: ClearRect,
+  inBox: (x: number, y: number) => boolean,
+): boolean {
+  for (let x = r.fromX; x <= r.toX; x++) {
+    for (let y = r.fromY; y <= r.toY; y++) {
+      if (!inBox(x, y)) return false;
+    }
+  }
+  return true;
+}
+
 export function buildPlacementOptions(
   frontier: readonly ReachableTarget[],
   b: PlacementBounds,
@@ -87,6 +152,56 @@ export function buildPlacementOptions(
       if (!fits) continue;
     }
 
+    // Terrain pass: the solver modelled two platforms and open air between
+    // them. Anything solid where that air must be is a tile to dig out —
+    // and if the selection box forbids digging it, the option is
+    // unbuildable and must not be offered at all.
+    const clearRects: ClearRect[] = [];
+    let needsBlockPlacement = true;
+    if (b.isSolid) {
+      // The corridor spans from the higher of the two surfaces down. The
+      // gap is dug to the bottom of the map: a shallow pit is either a
+      // walkway (too shallow) or a softlock (deep enough to trap, not
+      // deep enough to respawn), and neither is a jump.
+      const corridorTop = Math.min(landY, b.takeoff.y);
+      const pitBottom = (b.mapHeight ?? b.takeoff.y + 9) - 1;
+      const gapNear = b.takeoff.x + b.dir;
+      const gapFar = landX - b.dir;
+      const gapRect = tightSolidRect(
+        b.isSolid,
+        Math.min(gapNear, gapFar),
+        Math.max(gapNear, gapFar),
+        corridorTop,
+        pitBottom,
+      );
+      // Landing columns only need opening down to the landing cell — the
+      // rows below it are the platform the player stands on.
+      const landRect = tightSolidRect(
+        b.isSolid,
+        fromX,
+        toX,
+        corridorTop,
+        landY,
+      );
+
+      let buildable = true;
+      for (const r of [gapRect, landRect]) {
+        if (!r) continue;
+        if (b.inBox && !rectInBox(r, b.inBox)) {
+          buildable = false;
+          break;
+        }
+        clearRects.push(r);
+      }
+      if (!buildable) continue;
+
+      let allBlocksExist = true;
+      for (let x = fromX; x <= toX; x++) {
+        if (!b.isSolid(x, blockY)) allBlocksExist = false;
+      }
+      needsBlockPlacement = !allBlocksExist;
+    }
+
     out.push({
       id: `rise${t.deltaYTiles >= 0 ? "+" : ""}${t.deltaYTiles}_gap${t.gapTiles}`,
       playerLandsOn: { x: landX, y: landY },
@@ -94,6 +209,8 @@ export function buildPlacementOptions(
       gapTiles: t.gapTiles,
       risesTiles: t.deltaYTiles,
       timingSlackMs: t.timingSlackMs,
+      clearTheseTilesFirst: clearRects,
+      needsBlockPlacement,
     });
   }
   return out;

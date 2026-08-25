@@ -13,6 +13,7 @@ import {
 } from "../placementOptions.ts";
 import { getProcessingBox } from "../chatBox.ts";
 import { buildGridView } from "../sceneReachability.ts";
+import { snapToStandable } from "../reachability.ts";
 
 /**
  * Answers "put a platform as far / as high as possible while keeping it
@@ -98,10 +99,32 @@ export class FindFurthestPlacement {
       const tier = DIFFICULTY_TIER[difficulty];
       const dir = args.direction === "left" ? -1 : 1;
       const width = Math.max(1, Math.round(args.platformWidthTiles ?? 3));
-      const { x: tx, y: ty } = args.takeoffTile;
+      const tx = args.takeoffTile.x;
+      let ty = args.takeoffTile.y;
       const scene = this.sceneGetter();
       const grid = buildGridView(scene);
       const box = getProcessingBox() ?? scene.activeBox;
+
+      // The model routinely passes the solid block instead of the cell the
+      // player stands on, or a cell floating in the sky. Both are silently
+      // off by tiles — snap to the real standable cell in that column and
+      // say so, instead of computing an answer for a takeoff nobody is at.
+      let takeoffAdjusted: string | undefined;
+      if (grid) {
+        const snapped = snapToStandable(grid, tx, ty);
+        if (!snapped) {
+          return JSON.stringify({
+            takeoffTile: args.takeoffTile,
+            error:
+              `takeoffTile (${tx}, ${ty}) has no standable cell in its column — there is no ground the player could jump from there. ` +
+              "Pass the empty cell the player stands on at the edge of a real platform.",
+          });
+        }
+        if (snapped.y !== ty) {
+          takeoffAdjusted = `takeoffTile was adjusted from (${tx}, ${ty}) to (${tx}, ${snapped.y}) — the given cell was ${ty > snapped.y ? "inside the ground" : "floating in the air"}. All results below use the adjusted cell.`;
+          ty = snapped.y;
+        }
+      }
 
       // Measure the real run-up from the live map.
       let runwayTiles = 0;
@@ -121,8 +144,35 @@ export class FindFurthestPlacement {
         }
       }
 
+      // Lowest real ceiling over the corridor the jump flies through —
+      // runway plus the widest gap the ladder could propose. The solver's
+      // apex is ~7 tiles above the takeoff, so anything at 8+ (including
+      // the open map top) cannot constrain the jump and counts as sky.
+      const CEILING_CAP = 8;
+      let ceilingTiles: number | undefined;
+      if (grid) {
+        let ceiling = CEILING_CAP;
+        const span = runwayTiles + 16;
+        for (let i = -runwayTiles; i <= span - runwayTiles; i++) {
+          const x = tx + dir * i;
+          if (x < 0 || x >= grid.width) continue;
+          let h = 0;
+          while (h < CEILING_CAP) {
+            const yy = ty - (h + 1);
+            if (yy < 0) {
+              h = CEILING_CAP; // limited only by the map top = open sky
+              break;
+            }
+            if (grid.isSolid(x, yy)) break;
+            h++;
+          }
+          if (h < ceiling) ceiling = h;
+        }
+        if (ceiling < CEILING_CAP) ceilingTiles = ceiling;
+      }
+
       const options = buildPlacementOptions(
-        reachableFrontier(runwayTiles, tier),
+        reachableFrontier(runwayTiles, tier, ceilingTiles),
         {
           takeoff: { x: tx, y: ty },
           dir,
@@ -130,16 +180,20 @@ export class FindFurthestPlacement {
           mapWidth: grid?.width,
           mapHeight: grid?.height,
           inBox: box ? (x, y) => box.containsPoint(x, y) : undefined,
+          isSolid: grid ? (x, y) => grid.isSolid(x, y) : undefined,
         },
       );
 
       if (options.length === 0) {
         return JSON.stringify({
-          takeoffTile: args.takeoffTile,
+          takeoffTile: { x: tx, y: ty },
+          takeoffAdjusted,
           runwayTiles,
+          ceilingTiles: ceilingTiles ?? null,
           error:
             "No reachable placement fits inside the selection box and the map. " +
-            "Either the selection box is too small, the takeoff platform has no run-up, or the platform is too wide. " +
+            "Either the selection box is too small (it must also contain the full depth of any gap that needs digging out), " +
+            "the takeoff platform has no run-up, a low ceiling blocks the jump, or the platform is too wide. " +
             "Widen the selection box or reduce platformWidthTiles.",
         });
       }
@@ -159,13 +213,67 @@ export class FindFurthestPlacement {
             : balanced;
 
       console.log(
-        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} width=${width} intent=${intent} difficulty=${difficulty} -> ${recommended.id} (${recommended.timingSlackMs}ms)`,
+        `[findFurthestPlacement] takeoff=(${tx},${ty}) runway=${runwayTiles} ceiling=${ceilingTiles ?? "sky"} width=${width} intent=${intent} difficulty=${difficulty} -> ${recommended.id} (${recommended.timingSlackMs}ms, ${recommended.clearTheseTilesFirst.length} clear rect(s))`,
       );
 
+      // Ready-to-fire tool calls for the recommended option, in order.
+      // Every other option carries the same fields; the rules explain the
+      // identical mapping.
+      const buildIt = [
+        ...recommended.clearTheseTilesFirst.map((r) => ({
+          tool: "clearTile",
+          args: {
+            xMin: r.fromX,
+            xMax: r.toX,
+            yMin: r.fromY,
+            yMax: r.toY,
+            layerName: "Ground_Layer",
+          },
+          why: "digs out the gap — leave these tiles in place and the player simply walks across instead of jumping",
+        })),
+        ...(recommended.needsBlockPlacement
+          ? [
+              {
+                tool: "placeGridofTiles",
+                args: {
+                  tileIndex: 4,
+                  xMin: recommended.placeSolidBlocksAt.fromX,
+                  xMax: recommended.placeSolidBlocksAt.toX,
+                  yMin: recommended.placeSolidBlocksAt.y,
+                  yMax: recommended.placeSolidBlocksAt.y,
+                  layerName: "Ground_Layer",
+                },
+                why: "the landing platform",
+              },
+            ]
+          : []),
+      ];
+
+      const afterBuilding = {
+        tool: "calculateMaxGap",
+        args: {
+          runwayTiles,
+          deltaYTiles: recommended.risesTiles,
+          takeoffTile: { x: tx, y: ty },
+          targetTile: recommended.playerLandsOn,
+          gapTiles: recommended.gapTiles,
+          difficulty,
+        },
+        expect:
+          "proposed.tier at or below the requiredTier and allowedAtThisDifficulty true. Anything else means the build deviated from the option — fix it before replying.",
+      };
+
+      const playerTip =
+        recommended.timingSlackMs < 100
+          ? `This jump is at the limit and needs the max-distance technique: sprint the whole runway holding ${dir === 1 ? "right" : "left"}, run STRAIGHT OFF the edge without slowing, press jump a split second AFTER leaving the edge (coyote time), and keep jump held. Jumping at the edge the normal way falls short.`
+          : undefined;
+
       return JSON.stringify({
-        takeoffTile: args.takeoffTile,
+        takeoffTile: { x: tx, y: ty },
+        takeoffAdjusted,
         direction: args.direction ?? "right",
         runwayTiles,
+        ceilingTiles: ceilingTiles ?? null,
         platformWidthTiles: width,
         levelDifficulty: difficulty,
         requiredTier: tier,
@@ -174,15 +282,20 @@ export class FindFurthestPlacement {
           ...recommended,
           hardness: describeHardness(recommended.timingSlackMs),
         },
+        buildIt,
+        afterBuilding,
+        playerTip,
         options,
         rules: [
           "USE 'recommended' UNLESS YOU HAVE A REASON NOT TO. It already matches the requested intent.",
           "This is meant to be a HARD jump. Do not soften it, do not move the platform closer, and do not apologise for the difficulty — the player asked for the limit.",
           "Each option is a COMPLETE placement. Never take x from one option and y from another — that produces a jump no option endorsed and the player cannot make it.",
-          "Call placeGridofTiles with placeSolidBlocksAt: fromX..toX at row y. Do NOT place blocks at playerLandsOn — that is the empty cell the player occupies, one row above the blocks.",
+          "Build by executing 'buildIt' IN ORDER, passing each entry's args verbatim. The clearTile calls are not optional: they dig the gap that makes this a jump at all.",
+          "If you build a different option instead, derive the same calls from its fields: clearTheseTilesFirst rects -> clearTile (xMin=fromX, xMax=toX, yMin=fromY, yMax=toY), then if needsBlockPlacement, placeGridofTiles tileIndex 4 across placeSolidBlocksAt fromX..toX at row y. NEVER place blocks at playerLandsOn — that is the empty cell the player occupies, one row above the blocks.",
           "Do not move the platform further across or higher than the option you picked. These are limits, not suggestions.",
           "Rising costs reach: the highest option is never also the furthest.",
-          "verifyComplete passing does NOT prove this jump works — the player may be able to reach the platform another way, e.g. by walking along the ground and hopping up. If you want the jump itself checked, call calculateMaxGap with takeoffTile and targetTile.",
+          "After building, run 'afterBuilding' and check its expectation. verifyComplete passing does NOT prove this jump works — the player may be able to reach the platform another way.",
+          "If playerTip is present, include it in your reply — at this difficulty the player cannot make the jump without the technique it describes.",
         ],
       });
     },
@@ -192,9 +305,9 @@ export class FindFurthestPlacement {
       description:
         "Find where a platform can be placed so the player can still jump to it from a given takeoff point, at the limit of what is reachable. " +
         "Use this whenever the player asks for something 'as far as possible', 'as high as possible', 'at the very edge', or otherwise at the limit. " +
-        "Returns complete, ready-to-build placements — the exact blocks to place and the cell the player will land on — computed by simulating the real game physics. " +
+        "Returns complete, ready-to-build placements — the exact tiles to clear (digging the gap out of existing ground where needed), the exact blocks to place, and the cell the player will land on — computed by simulating the real game physics against the live map, including real run-up and ceilings. " +
         "Every option is clamped to the map and the selection box, so anything it returns is safe to build. " +
-        "Pass 'intent' to say what the player actually asked for, then build the 'recommended' option verbatim.",
+        "Pass 'intent' to say what the player actually asked for, then execute the returned 'buildIt' calls verbatim.",
     },
   );
 }
